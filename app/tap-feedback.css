@@ -1,0 +1,36 @@
+/* Two-tap key feedback, shared by app/dashboard.html and
+   services/actions/page.html. The dashboard page's file server serves it from
+   this directory; the actions server serves the same file at
+   /tap-feedback.css by route.
+   Press shrink; a slow repeating gray ring while a key is armed (one
+   neutral color on every key); a breathing blue border around dimmed
+   content while the confirmed request is in flight. Expanding gray ring =
+   waiting for the confirming tap, blue border fading in place = request
+   under way — the two share neither color nor motion shape. Grays and
+   blue come from the page's --sub, --faint and --tool tokens. */
+
+.sq, .key { transition: transform .08s, color .15s,
+  background-color .15s, border-color .15s; }
+.sq:enabled:active, .key:enabled:active {
+  transform: scale(.92); }
+.sq.armed, .key.armed {
+  animation: arm-burst 1.6s ease-out infinite; }
+/* in flight: an obvious 2px tool-blue border (the token is darker in
+   light mode, lighter in dark mode) breathing in place around strongly
+   dimmed content; element opacity stays 1 so the border keeps full
+   strength */
+.sq.inflight, .key.inflight {
+  color: var(--faint);
+  background: color-mix(in srgb, var(--tool) 10%, var(--bg));
+  animation: hold-pulse 1.1s ease-in-out infinite alternate; }
+.sq.inflight:disabled, .key.inflight:disabled {
+  opacity: 1; cursor: default; }
+@keyframes arm-burst {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--sub) 55%, transparent); }
+  100% { box-shadow: 0 0 0 9px transparent; }
+}
+@keyframes hold-pulse {
+  from { box-shadow: inset 0 0 0 2px var(--tool); }
+  to { box-shadow: inset 0 0 0 2px
+         color-mix(in srgb, var(--tool) 30%, var(--bg)); }
+}

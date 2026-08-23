@@ -1,0 +1,40 @@
+{
+  "categories": [
+    {
+      "name": "iris",
+      "items": [
+        {"name": "gateway", "desc": "Matrix gateway, runs the Iris agent", "type": "service", "launchd": "ai.hermes.gateway"},
+        {"name": "webui", "desc": "Hermes web UI, serves Hermes over Tailscale", "type": "service", "launchd": "com.example.iris.webui", "http": "http://127.0.0.1:35422/"},
+        {"name": "webui-restart", "desc": "restarts webui after hermes-agent updates", "type": "service", "launchd": "com.example.iris.webui-restart", "event": true, "restart_log": "~/.hermes/logs/webui-restart.log"},
+        {"name": "synapse", "desc": "local Matrix homeserver", "type": "service", "launchd": "org.matrix.synapse", "http": "http://127.0.0.1:9273/health"},
+        {"name": "omlx", "desc": "local model server", "type": "service", "http": "http://127.0.0.1:2130/health"},
+        {"name": "dashboard", "desc": "Iris dashboard page, serves app/ over Tailscale", "type": "service", "launchd": "com.example.iris.dashboard", "http": "http://127.0.0.1:30655/"},
+        {"name": "actions", "desc": "actions service + page, port 13727, tailnet only", "type": "service", "launchd": "com.example.iris.actions", "http": "http://127.0.0.1:13727/"},
+        {"name": "nightly-backup", "desc": "nightly Actual + ~/.hermes zips, tree mirror to cloud storage + git commit", "type": "cron", "newest_files": ["~/backup/actual/daily.zip", "~/backup/daily.zip", "~/backup/synapse/homeserver.db"], "max_file_age_h": 26},
+        {"name": "busy-events", "desc": "Personal events mirrored to Family as busy blocks", "type": "cron"},
+        {"name": "iris-health", "desc": "health check of every MCP server, every 3 h; a failure emails once and again only if the failure set changes", "type": "cron"},
+        {"name": "hermes-updates", "desc": "daily hermes-agent upstream check via iris_ops hermes_release_summary and hermes_update_summary", "type": "cron"},
+        {"name": "reminders-done", "desc": "yesterday's finished reminders, grouped by list, posted to Iris Updates", "type": "cron"},
+        {"name": "actions-inbox-scan", "desc": "daily inbox scan, saves proposed action sets for the actions page", "type": "cron"},
+        {"name": "messages-attach-scan", "desc": "3x/day scan of watched Apple Messages chats, proposes attachment saves for the actions page", "type": "cron"},
+        {"name": "ddns-ip-update", "desc": "updates the example.org A record at the DNS provider when the WAN IP changes", "type": "cron"},
+        {"name": "hermes-audit", "desc": "weekly Hermes audit pass, Sundays 08:10; report to ~/Iris/hermes-audit-report.md and the actions page's audit area", "type": "cron"}
+      ]
+    },
+    {
+      "name": "finance",
+      "items": [
+        {"name": "actual", "desc": "Actual Budget sync server", "type": "service", "launchd": "org.actualbudget.sync-server", "http": "http://127.0.0.1:60195/"},
+        {"name": "actual-sync", "desc": "SimpleFIN bank sync into Actual", "type": "cron"},
+        {"name": "finance-daily", "desc": "the daily finance report email, 07:00", "type": "cron"},
+        {"name": "finance-uncategorized", "desc": "3x/day categorization batch for the actions page's finance area; the page's scan key fires it too", "type": "cron"}
+      ]
+    },
+    {
+      "name": "research",
+      "items": [
+        {"name": "research-batch", "desc": "overnight research topic runs", "type": "cron"}
+      ]
+    }
+  ]
+}

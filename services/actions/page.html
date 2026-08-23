@@ -1,0 +1,3740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Actions">
+<title>Iris — Actions</title>
+<link rel="icon" href="apple-touch-icon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<!-- Iris actions page. Everything comes from GET /api/state, polled once a
+     minute, every 3 s while a scan or a row is running; the header stamp
+     counts from the last successful fetch and turns amber when a fetch
+     fails, so a dead service shows as a growing amber age.
+     Two layers. The glance layer is a grid of narrow area tiles — icon,
+     open-items count, one shorthand status line, amber when something is
+     wrong — led by a "queue" tile: the emails, messages and finance icons
+     over the total of those three counts. A tile picks the view: the queue
+     tile stacks emails, messages and finance (the default), an area tile
+     shows that area alone at full depth; report, research, audit and system
+     are reachable through their own tiles only. The choice sticks in
+     localStorage per device.
+     A strip of icon+count chips pins itself under the top bar while the
+     tile grid is scrolled out of view, so switching views never needs a
+     scroll back up.
+     The work layer is seven areas. Each opens with its control row, in the
+     console's own row shape: the area's header on the left — icon, name and
+     one status line carrying its scan state, then its counts in their
+     shortest form ("last ran 1 hr ago, 12 in inbox") — and every key of that
+     area on the right, so the title row and the control row are one row.
+     Report and research are the exceptions, their headers standing above
+     their panels: report's keys pick report parts, so its rows are named
+     by hand (unsorted, report), and research has one console row per topic.
+     System has no control row — its keys belong to its console rows. The areas: emails (inbox-derived action sets, one
+     card per set), messages (save proposals for attachments in the watched
+     Apple Messages chats — one row per attachment, a destination dropdown
+     and the two-tap save and deny keys, and a hide key once a row is
+     saved), finance (the Actual Budget categorization queue —
+     one ledger card per source: proposals from email, the newest
+     uncategorized transactions, the random older ones; one row per
+     transaction — a transaction proposed both from email and by the scan
+     renders once, under email, and the count line names the hidden
+     duplicates; email rows carry a two-tap hide key and the email group
+     label a hide-all key, both dropping proposals only, never
+     transactions; the dropdown pre-picks the
+     most likely category, the two-tap check key applies it, a checkbox —
+     started indeterminate, an explicit on/off is required before the check
+     key arms — decides whether the payee rule is also written, a
+     chevron key opens the row's extra area: the chat link and an inline
+     create-category form, the header's green submit-all key sends
+     every valid row in one apply call, and a filed row keeps one hide
+     key), finance report (no cards — the part keys pick a part of
+     the daily report email, full or one component alone, and the green
+     create-preview key builds the picked part, writing nothing and sending
+     nothing; the picked key carries a blue outline, and each part's last
+     build is cached, so the part keys switch between texts with no new run),
+     research (one expandable row per vault web-research topic: cadence and
+     last successful run in the row's meta line, an amber "failed ×N" status
+     word while the driver's log shows consecutive failures, the green run
+     key that starts it now (the finished report arrives by email), and the
+     amber delete key that drops its stored report, so the next run starts
+     from scratch; a chevron key or a tap opens the row — the topic's
+     prompt and the report's text, read from the service on the first open,
+     plus the clear key for a failure; the heading line carries the next
+     batch time, one stamp for the whole area),
+     audit (a key that starts the
+     deterministic Hermes audit, the running step in the header, and one card
+     per category that came back with findings — clean and dismissed
+     categories are counted in the header line and named in its tooltip),
+     and system (a console: one row per thing —
+     the gateway, the webui — each with its own timer
+     and its own keys; explanations live in the keys' tooltips, not on the
+     rows).
+     A failed or stale scan reads in the area's header row in amber, and as
+     an amber mark on the area's tile and strip chip.
+     Emails, messages and finance each put one centered line where their
+     cards would be when the area came back with nothing; a failed scan puts
+     its own card there instead.
+     An email set card is three sections — analysis, the member emails,
+     actions — each built from one row template with an expandable detail.
+     An open email row reads the email's own text from the service and keeps
+     it for the rest of the session.
+     Its head carries the chat link and one key: skip all (deny every row
+     still open) while the set has work left; hide (the card leaves the page)
+     once every row is done; retry (void the set and hand its emails back to
+     the next scan) when only failed rows are left. The emails header's
+     hide-finished key takes every finished set off the page at once; the
+     finance and messages headers have the same key for their filed
+     transactions and saved rows, and the messages one sits next to a
+     skip-all key that denies every attachment still waiting.
+     Everything staged is untrusted content (an agent that read untrusted
+     email staged it): every variable value enters the DOM through
+     textContent on nodes built with document.createElement; the only
+     innerHTML is the static lucide icon markup, never data. -->
+<style>
+/* One dashboard-family surface: gray page behind white cards (the
+   dashboard page's Ayu palette), every block icon in one blue, both area
+   headers the same neutral ink like the dashboard page's panel titles.
+   Each area's header is a
+   chrome-less sticky bar: a dense title row over a faint edge-to-edge
+   rule, frosted translucent page color while content slides under it.
+   An email set is a card whose
+   sections (analysis, source emails, actions) read through icons and
+   dashed rules, no labels; rows separate by spacing alone. Finance is one
+   ledger card per pick ('from email', 'last', 'random', each under a
+   small-caps label with its row count), one row per transaction, no icon
+   column: payee over one
+   gray meta line (date, account, memo), a plain mono amount, then the
+   actions — a chevron key that opens the row's extra area, the category
+   dropdown pre-picked with the most likely category, the rule checkbox
+   chip (three states: indeterminate until the user sets it on or off),
+   the approx chip beside it (anchors the rule on the row's amount, off
+   and inert while the rule chip is off or unset), and the two-tap green
+   check key at the row's end. The toolbar stays dark in both themes. */
+
+:root {
+  color-scheme: light;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --bg: #f2f4f5; --panel: #ffffff; --band: #f2f5f6; --fill2: #e6ebee;
+  --card-edge: #e6eaed; --card-shadow: 0 1px 3px rgba(16,24,40,.06);
+  --ink: #3e4347; --sub: #7d8590; --faint: #a9aeb2;
+  --hair: #eef1f2; --rule: #e4e9eb; --track: #d9dfe4;
+  --amber: #b06f2f; --green: #5f9147; --tool: #4f7fa3;
+  --brand: #ff9a00; --s1: #7aa159; --s2: #9784b6; --s3: #6690b3;
+  --dot-sat: 0.8; --dot-lit: 0.85;
+  --bar: #292f3c; --bar-ink: #e7eaee; --bar-sub: #9aa4b5;
+  --bar-rule: #3b4454; --bar-fill: #333b48; --bar-edge: #20252f;
+  --pad-x: 8px;
+  --bar-max: 980px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #20252f; --panel: #292f3c; --band: #323949; --fill2: #3b4454;
+    --card-edge: #191d27; --card-shadow: 0 1px 3px rgba(0,0,0,.3);
+    --ink: #cccac2; --sub: #8894a6; --faint: #5e6879;
+    --hair: #323948; --rule: #3b4454; --track: #4a5669;
+    --amber: #cf9967; --green: #82a865; --tool: #8ab4cf;
+    --brand: #ff9a00; --s1: #85a171; --s2: #a293bd; --s3: #7195b5;
+    --dot-sat: 0.65; --dot-lit: 1.0;
+    --bar: #171b23; --bar-ink: #cccac2; --bar-sub: #7a8496;
+    --bar-rule: #2b323e; --bar-fill: #262c37; --bar-edge: #101318;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #20252f; --panel: #292f3c; --band: #323949; --fill2: #3b4454;
+  --card-edge: #191d27; --card-shadow: 0 1px 3px rgba(0,0,0,.3);
+  --ink: #cccac2; --sub: #8894a6; --faint: #5e6879;
+  --hair: #323948; --rule: #3b4454; --track: #4a5669;
+  --amber: #cf9967; --green: #82a865; --tool: #8ab4cf;
+  --brand: #ff9a00; --s1: #85a171; --s2: #a293bd; --s3: #7195b5;
+  --dot-sat: 0.65; --dot-lit: 1.0;
+  --bar: #171b23; --bar-ink: #cccac2; --bar-sub: #7a8496;
+  --bar-rule: #2b323e; --bar-fill: #262c37; --bar-edge: #101318;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 15px; line-height: 1.6; font-variant-numeric: tabular-nums;
+  background: var(--bg); color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+  overflow-x: clip;
+}
+.svg-icon { width: 13px; height: 13px; stroke: currentColor; fill: none;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* toolbar: shared component — markup, styles and behavior come from /bar.js
+   (app/bar.js, shared with the dashboard page); --bar-max sets its content width */
+
+/* dev design tiles: shared component — markup, styles and behavior come
+   from /dev-bar.js (app/dev-bar.js, shared with the dashboard page) */
+
+/* ---- the glance layer: narrow area tiles ---------------------------------
+   Narrow enough for 2-3 per row on a phone; the last grid row may wrap.
+   Each tile: icon + short name on top, and pinned to the bottom the
+   open-items count (only where the area has one) over one shorthand status
+   line (amber when something is wrong), so those lines line up across a row
+   however far a name wraps. The "queue" tile sits first and
+   stacks emails, messages and finance; an area tile shows that area alone. One color per area;
+   finance and its report share the green family, the two chat areas the
+   blue family. */
+
+.tiles { display: grid; gap: 8px; margin: 14px 0 22px;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+.atile { font-family: inherit; font-size: inherit; text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--card-edge); border-radius: 10px;
+  background: var(--panel); box-shadow: var(--card-shadow);
+  padding: 8px 11px 6px; color: var(--ink);
+  display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+/* the icon aligns with the name's first line, so a two-line name does not
+   leave it floating halfway down; the 1px nudge keeps a one-line row's
+   icon optically centered */
+.atile .trow { display: flex; align-items: flex-start; gap: 6px;
+  font-size: 12px; font-weight: 650; min-width: 0; }
+.atile .trow .svg-icon { width: 14px; height: 14px; stroke-width: 2.2;
+  color: var(--ac); flex: none; margin-top: 1px; }
+/* a long name ("finance report") wraps to a second line instead of
+   clipping; past two lines it still ellipsizes */
+.atile .trow .nm { display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; overflow: hidden; line-height: 1.35; }
+/* the bottom block — count over status line — pinned to the tile's bottom;
+   an area with no count (report, research) leaves the count row out rather
+   than holding the space with a placeholder */
+.atile .tbot { margin-top: auto; display: flex; flex-direction: column;
+  gap: 1px; }
+.atile .tcount { font-size: 22px; font-weight: 700; line-height: 1.3; }
+.atile .tstat { color: var(--sub); font-size: 10.5px; line-height: 1.5;
+  letter-spacing: 0.02em; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; min-height: 16px; }
+.atile .tstat .bad { color: var(--amber); }
+/* tiles alone show work under way in green; the area headers keep the
+   in-flight blue */
+.atile .tstat .wrk { color: var(--green); }
+/* the prev/next glyphs (history, timer) ride the status line at text size */
+.atile .tstat .svg-icon { width: 11px; height: 11px; vertical-align: -2px;
+  stroke-width: 2; }
+.atile.sel { border: 2px solid var(--ac); padding: 7px 10px 5px; }
+.atile.queue { --ac: var(--tool); }
+.atile.emails { --ac: var(--brand); }
+.atile.finance { --ac: var(--s1); }
+.atile.report { --ac: var(--green); }
+.atile.research { --ac: var(--tool); }
+.atile.messages { --ac: var(--s3); }
+.atile.audit { --ac: var(--s2); }
+.atile.system { --ac: var(--sub); }
+
+/* the strip: icon+count chips pinned under the bar while the tile grid is
+   scrolled out of view, so switching views never needs a scroll back up */
+.strip { position: fixed; top: var(--bar-h, 48px); left: 0; right: 0;
+  z-index: 35; display: flex; justify-content: center; gap: 6px;
+  padding: 7px 1rem; overflow-x: auto;
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--rule);
+  transform: translateY(-110%); transition: transform .18s; }
+.strip.show { transform: none; }
+.schip { font-family: inherit; font-size: 12px; font-weight: 650;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  flex: none; min-height: 28px; padding: 2px 11px; border-radius: 14px;
+  border: 1px solid var(--rule); background: var(--panel);
+  color: var(--sub); }
+.schip .svg-icon { width: 13px; height: 13px; stroke-width: 2.2;
+  color: var(--ac); }
+.schip .n { font-weight: 700; }
+.schip .warndot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--amber); }
+.schip.on { border-color: var(--ac); color: var(--ink); }
+.schip.queue { --ac: var(--tool); }
+.schip.emails { --ac: var(--brand); }
+.schip.finance { --ac: var(--s1); }
+.schip.report { --ac: var(--green); }
+.schip.research { --ac: var(--tool); }
+.schip.messages { --ac: var(--s3); }
+.schip.audit { --ac: var(--s2); }
+.schip.system { --ac: var(--sub); }
+
+/* ---- area headers: slim rows, no longer sticky (the strip orients) -------
+   A header row is an icon, a name and one status line. It rides the area's
+   control row, so the header and the keys are one row; report's header
+   stands on its own above its two named rows. */
+
+.area { margin-bottom: 30px;
+  /* a strip tap scrolls here; leave room for the bar plus the strip */
+  scroll-margin-top: calc(var(--bar-h, 48px) + 46px); }
+.area.off { display: none; }
+.area-top { display: flex; align-items: baseline; flex-wrap: wrap;
+  gap: 8px 12px; margin: 0 2px 12px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule); }
+.area-h { margin: 0; font-size: 13.5px; font-weight: 650;
+  letter-spacing: 0; text-transform: capitalize; }
+.a-ic { display: grid; place-items: center; align-self: center; flex: none; }
+.a-ic .svg-icon { width: 14px; height: 14px; stroke-width: 2.2; }
+.a-ic.emails { color: var(--brand); }
+.a-ic.finance { color: var(--s1); }
+.a-ic.report { color: var(--green); }
+.a-ic.research { color: var(--tool); }
+.a-ic.messages { color: var(--s3); }
+.a-ic.audit { color: var(--s2); }
+.a-ic.system { color: var(--sub); }
+
+/* the system console: one row per thing, its own timer and keys per row.
+   Every area's control row is built from the same parts, so both read as one
+   kind of row. */
+.upitem { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+  padding: 10px var(--pad-x); }
+.upitem + .upitem { border-top: 1px dashed var(--rule); }
+.upname { font-weight: 650; font-size: 13.5px; width: 90px; flex: none; }
+.upstat { color: var(--sub); font-size: 12.5px; flex: 1; min-width: 150px; }
+.upkeys { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;
+  justify-content: flex-end; }
+
+/* a control row carrying the area's header in place of a name: icon, name
+   and status line on its left, that area's keys on its right */
+.upitem > .area-top { flex: 1 1 auto; min-width: 0;
+  margin: 0; padding: 0; border-bottom: 0; }
+/* the row holds nothing but this line now, so it wraps rather than cutting
+   off: the counts ride its end, and a cut-off count is worth nothing */
+.a-info { font-size: 12.5px; letter-spacing: 0.02em; color: var(--sub);
+  min-width: 0; }
+/* a scan under way reads in the same blue as an in-flight key, so work
+   under way is one color across the page */
+.a-info .wrk { color: var(--tool); }
+.a-info .bad { color: var(--amber); }
+/* the second status row, under the heading rule: detail that would push the
+   heading row past a phone's width, so it wraps instead of being cut off */
+.a-detail { color: var(--sub); font-size: 12.5px; letter-spacing: 0.02em;
+  margin: 0 0 12px; }
+
+/* an area with nothing to act on: one centered line where its cards would be */
+.empty { display: flex; align-items: center; justify-content: center;
+  gap: 8px; color: var(--faint); font-size: 13px;
+  padding: 10px var(--pad-x); }
+.empty .svg-icon { width: 14px; height: 14px; }
+
+/* ---- set cards ----------------------------------------------------------- */
+
+.wrap { max-width: 980px; margin: 0 auto; padding: 2px 1rem 3rem;
+  --pad-x: 18px; }
+.panel { margin: 0 0 16px; border: 1px solid var(--card-edge);
+  border-radius: 10px; background: var(--panel);
+  box-shadow: var(--card-shadow); overflow: hidden; }
+.p-head { display: flex; align-items: center; gap: 12px;
+  margin: 0; padding: 12px var(--pad-x) 6px;
+  cursor: pointer; user-select: none; }
+.p-head .t { color: var(--ink); font-size: 15px; font-weight: 650; }
+.p-head .fill { flex: 1; }
+.p-head .m { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  color: var(--faint); font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; white-space: nowrap; }
+.card.closed > :not(.p-head) { display: none; }
+.card.closed > .p-head { padding-bottom: 12px; }
+.card.done .p-head .t { color: var(--sub); font-weight: 600; }
+
+/* ---- set body: unlabeled sections split by dashed rules ------------------ */
+
+.c-body { padding: 4px 0 10px; display: flex; flex-direction: column; }
+.sect { display: flex; flex-direction: column; padding: 6px 0; }
+.sect + .sect { border-top: 1px dashed var(--rule); }
+
+/* ---- items --------------------------------------------------------------- */
+
+.blk { padding: 2px 0; }
+.b-main { display: flex; align-items: center; gap: 12px;
+  padding: 10px var(--pad-x); cursor: pointer; }
+@media (hover: hover) {
+  .b-main:hover { background: var(--band); }
+}
+.b-text { flex: 1; min-width: 0; }
+.b-title { font-weight: 650; line-height: 1.45;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* a green check after the title marks a row that finished successfully */
+.t-done { color: var(--green); margin-left: 6px; }
+.t-done .svg-icon { vertical-align: -2px; }
+.b-meta { color: var(--sub); font-size: 13.5px; line-height: 1.5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.blk.open > .b-main .b-title, .blk.open > .b-main .b-meta { white-space: normal; }
+.clamp { display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5; overflow: hidden; white-space: normal; }
+.blk.open > .b-main .clamp { display: block; -webkit-line-clamp: unset; }
+.b-err { color: var(--amber); font-size: 12.5px; line-height: 1.5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.blk.open > .b-main .b-err { white-space: normal; }
+/* the link line reads as plain text (clickable, but not styled as a link) */
+.b-links a { display: block; color: var(--sub); text-decoration: none;
+  font-size: 13px; line-height: 1.5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.blk.open > .b-main .b-links a { white-space: normal; overflow-wrap: anywhere; }
+/* the suggestion note: sparkle + one line saying why this time was proposed */
+.b-why { color: var(--sub); font-size: 13px; line-height: 1.5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.blk.open > .b-main .b-why { white-space: normal; }
+.b-meta .svg-icon, .b-links .svg-icon, .b-why .svg-icon {
+  width: 14px; height: 14px;
+  vertical-align: -2.5px; margin-right: 5px; color: var(--tool);
+  stroke-width: 2.2; }
+.b-meta .svg-icon { margin-left: 8px; }
+.b-meta .svg-icon:first-child { margin-left: 0; }
+.b-side { display: flex; align-items: center; gap: 10px; flex: none;
+  font-size: 11.5px; color: var(--faint); }
+.caldot { display: inline-block; width: 8px; height: 8px; flex: none;
+  border-radius: 50%; margin-right: 4px; vertical-align: 0;
+  background: hsl(from var(--cal-raw) h calc(s * var(--dot-sat))
+                  calc(l * var(--dot-lit))); }
+.blk.settled > .b-main .b-title { color: var(--sub); }
+.blk.settled > .b-main .bicon, .blk.settled > .b-main .verb { opacity: .55; }
+.blk.gone { opacity: .65; }
+.gone-tag { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--faint); border: 1px solid var(--faint);
+  border-radius: 4px; padding: 0 4px; }
+
+/* ---- icon column: one blue for every block glyph ------------------------- */
+
+.tilebox { width: 42px; flex: none; display: flex; flex-direction: column;
+  align-items: center; gap: 2px; padding: 3px 0;
+  align-self: flex-start; }  /* pinned to the block's first text line */
+.bicon { position: relative; display: grid; place-items: center;
+  width: 26px; height: 26px; color: var(--tool); }
+.bicon .svg-icon { width: 20px; height: 20px; stroke-width: 2; }
+.verb { font-size: 8.5px; font-weight: 800; letter-spacing: 0.06em;
+  text-transform: uppercase; line-height: 1.4; text-align: center;
+  color: var(--tool);
+  /* a two-line verb ("new suggestion") breaks at its \n and may run a few
+     pixels wider than the tilebox — centered, into the 12px column gap */
+  white-space: pre-line; width: max-content; }
+
+.stat { flex: none; font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.stat.bad { color: var(--amber); }
+.stat.wrk { color: var(--tool); }
+
+/* ---- approve/deny: soft tint chips --------------------------------------- */
+
+.sqs { display: flex; gap: 8px; flex: none; }
+.sq { display: grid; place-items: center; width: 46px; height: 40px;
+  border-radius: 12px; border: 2px solid transparent; background: var(--band);
+  color: var(--sub); cursor: pointer; padding: 0; }
+/* a tinted border marks a pressable chip: it only shows while enabled */
+.sq .svg-icon { width: 17px; height: 17px; stroke-width: 2.6; }
+.sq.yes { background: color-mix(in srgb, var(--green) 13%, var(--bg));
+  color: var(--green); }
+.sq.yes:not(:disabled) {
+  border-color: color-mix(in srgb, var(--green) 40%, var(--bg)); }
+.sq.non { background: color-mix(in srgb, var(--amber) 12%, var(--bg));
+  color: var(--amber); }
+.sq.non:not(:disabled) {
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--bg)); }
+.sq:disabled { opacity: .4; cursor: default; }
+@media (hover: hover) {
+  .sq.yes:enabled:hover:not(.armed) {
+    background: color-mix(in srgb, var(--green) 22%, var(--bg)); }
+  .sq.non:enabled:hover:not(.armed) {
+    background: color-mix(in srgb, var(--amber) 20%, var(--bg)); }
+}
+/* armed keys keep their normal look — the pulsing ring alone says armed */
+/* the open_email row's link chip: same shape as the approve/deny chips */
+a.sq.go { color: var(--tool); text-decoration: none;
+  border-color: color-mix(in srgb, var(--tool) 40%, var(--bg));
+  background: color-mix(in srgb, var(--tool) 12%, var(--bg)); }
+@media (hover: hover) {
+  a.sq.go:hover { background: color-mix(in srgb, var(--tool) 20%, var(--bg)); }
+}
+
+.golink { display: grid; place-items: center; width: 40px; height: 36px;
+  border-radius: 10px; color: var(--faint); }
+@media (hover: hover) {
+  .golink:hover { color: var(--tool); background: var(--band); }
+}
+.golink .svg-icon { width: 15px; height: 15px; }
+
+/* ---- expanded item ------------------------------------------------------- */
+
+.b-detail { display: none; border-top: 1px dashed var(--rule);
+  margin: 0 var(--pad-x); padding: 10px 0 12px 50px; }
+.blk.open > .b-detail { display: flex; flex-direction: column; gap: 10px; }
+.b-label { color: var(--sub); font-size: 13.5px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px 18px; }
+.field.wide { grid-column: 1 / -1; }
+.fk { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--faint); }
+.fv { font-size: 13.5px; color: var(--ink); line-height: 1.5;
+  overflow-wrap: anywhere; }
+.b-status { color: var(--sub); font-family: var(--mono); font-size: 12px;
+  overflow-wrap: anywhere; }
+.rawrow { display: flex; justify-content: flex-end; }
+.b-detail .json { display: none; }
+.b-detail.rawopen .json { display: block; }
+
+.json { margin: 0; padding: 8px 12px;
+  background: var(--band); border-radius: 10px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
+  color: var(--sub); white-space: pre-wrap; overflow-wrap: anywhere; }
+.json .jk { color: var(--tool); }
+.json .js { color: var(--green); }
+.json .jn { color: var(--amber); }
+.json .jb { color: var(--s2); }
+
+/* ---- text keys: gray chips -----------------------------------------------
+   Two key sizes on the page: this one (every text key, the category picker
+   and the area-header keys included) and the 46x40 .sq chips — the email
+   approve/deny and finance accept keys. */
+
+.key { font-family: inherit; cursor: pointer; padding: 4px 14px;
+  min-height: 30px; border-radius: 10px; white-space: nowrap;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; text-decoration: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 2px solid transparent; background: var(--fill2); color: var(--sub); }
+/* a visible border marks a pressable key: it only shows while enabled */
+.key:not(:disabled) { border-color: var(--track); }
+/* hover colors only on devices with a real pointer — on touch the tap's
+   hover state sticks to the key until the next tap elsewhere, so the key
+   stays bright after use */
+@media (hover: hover) {
+  .key:not(:disabled):hover { background: var(--rule); color: var(--ink); }
+}
+.key:disabled { opacity: .5; cursor: default; }
+/* the green key: submit all — the only green text key, same tint family
+   as the .sq.yes chips */
+.key.green { background: color-mix(in srgb, var(--green) 13%, var(--bg));
+  color: var(--green); }
+.key.green:not(:disabled) {
+  border-color: color-mix(in srgb, var(--green) 40%, var(--bg)); }
+@media (hover: hover) {
+  .key.green:not(:disabled):hover:not(.armed) {
+    background: color-mix(in srgb, var(--green) 22%, var(--bg));
+    color: var(--green); }
+}
+/* the amber key: the audit's reset — same tint family as the .sq.non chips */
+.key.amber { background: color-mix(in srgb, var(--amber) 13%, var(--bg));
+  color: var(--amber); }
+.key.amber:not(:disabled) {
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--bg)); }
+@media (hover: hover) {
+  .key.amber:not(:disabled):hover:not(.armed) {
+    background: color-mix(in srgb, var(--amber) 22%, var(--bg));
+    color: var(--amber); }
+}
+/* the picked report part: a blue outline, the page's color for the thing in
+   hand — the panel shows this part and the create-preview key builds it */
+.key.part.picked { border-color: var(--tool); color: var(--tool); }
+.key .svg-icon { width: 12px; height: 12px; }
+.key.rawbtn { font-family: var(--mono); text-transform: none;
+  letter-spacing: 0; font-size: 11px; min-height: 26px; padding: 3px 10px;
+  background: none; color: var(--faint); border-color: transparent; }
+@media (hover: hover) {
+  .key.rawbtn:hover { color: var(--sub); background: var(--band); }
+}
+/* the payee-rule checkbox rides inside a chip; amber while indeterminate
+   (no choice made yet), green once set */
+.key.rulechk { gap: 7px; cursor: pointer; }
+.key.rulechk:has(input:disabled) { opacity: .5; cursor: default; }
+.key.rulechk input { width: 14px; height: 14px; margin: 0;
+  accent-color: var(--green); cursor: pointer; }
+.key.rulechk input:indeterminate { accent-color: var(--amber); }
+
+/* ---- finance: one ledger card per pick ------------------------------------ */
+
+/* each pick's label sits above its card, outside the panel — the page's
+   small-caps label style, same as a row's verb and the head's meta text.
+   Flex so the email group's hide-all key can ride the label line, pushed
+   to the card's right edge */
+.fin-label { color: var(--sub); font-size: 11px; font-weight: 650;
+  letter-spacing: 0.09em; text-transform: uppercase;
+  margin: 0 0 8px 4px; display: flex; align-items: center; }
+.fin-label .key { margin-left: auto; }
+.panel + .fin-label { margin-top: 10px; }
+.fin .p-head { cursor: default; }   /* the scan-failed panel keeps a head */
+.fin .c-body { padding: 10px 0 4px; }
+.fin .c-body .b-err { padding: 0 var(--pad-x); }
+.fin-item + .fin-item { border-top: 1px dashed var(--rule); }
+/* one row per transaction; the text swallows the free space, so flex-end
+   only moves what wraps on narrow screens to the right edge */
+.fin-main { display: flex; align-items: center; flex-wrap: wrap;
+  justify-content: flex-end; gap: 8px 12px; padding: 10px var(--pad-x); }
+.fin-main .b-text { min-width: 180px; }
+.fin-main .b-err { white-space: normal; }
+/* the amount is plain mono text, green when money came in */
+.fin-amt { font-family: var(--mono); font-size: 13.5px; font-weight: 700; }
+.fin-amt.pos { color: var(--green); }
+.fin-keys { display: flex; align-items: center; flex-wrap: wrap;
+  justify-content: flex-end; gap: 8px; }
+/* fixed picker width keeps the amounts in a column across rows */
+.fin-keys .catsel { width: 170px; }
+
+/* the expand chevron: first key of the category cluster — it opens the
+   row's extra area, so it sits with them; solid, darker while open */
+.exp { padding-left: 10px; padding-right: 10px; }
+.exp .svg-icon { width: 14px; height: 14px; transition: transform .18s; }
+.fin-item.open .exp, .blk.open .exp { background: var(--rule); color: var(--ink); }
+.fin-item.open .exp .svg-icon,
+.blk.open .exp .svg-icon { transform: rotate(180deg); }
+
+/* the extra area the chevron opens: one line of chat + the new-category
+   chip, and the create form on its own full-width line */
+.fin-more { display: none; }
+.fin-item.open .fin-more { display: flex; flex-direction: column; gap: 8px;
+  padding: 0 var(--pad-x) 12px; }
+.morerow { display: flex; align-items: center; flex-wrap: wrap;
+  justify-content: flex-end; gap: 8px; }
+/* the chat chip holds the line's left edge; everything else stays right */
+.morerow .chatkey { margin-right: auto; }
+/* create category: its own full-width line; the plus chip hides while the
+   form is open */
+.fin-more.creating .addkey { display: none; }
+.newform { display: none; align-items: center; flex-wrap: wrap;
+  justify-content: flex-end; gap: 8px; }
+.fin-more.creating .newform { display: flex; }
+.newform .catsel { width: auto; }
+.newform input { font: inherit; font-size: 12.5px; min-height: 30px;
+  flex: 1; min-width: 140px; border: 1px solid var(--rule); border-radius: 10px;
+  background: none; color: var(--ink); padding: 3px 12px; }
+.newform input::placeholder { color: var(--faint); }
+.newform input:focus { outline: none; border-color: var(--tool); }
+
+/* the extra area's block of raw text — an attachment's extracted text, an
+   email's own text — bounded so a long one does not push the list around */
+.rawtext { margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-size: 12.5px; line-height: 1.45; color: var(--sub);
+  max-height: 320px; overflow-y: auto; }
+
+/* the report preview: the same raw block, uncapped and inset like the audit's
+   findings — the point of the area is reading the whole report */
+.rawtext.report { max-height: none; padding: 2px var(--pad-x) 4px;
+  color: var(--ink); }
+
+/* the research rows are item rows in one panel, so they keep the console's
+   dashed rules between them; an open row's prompt and report each sit in
+   their own banded block (the .json block's look), so the two texts read
+   as separate things */
+#cards-research .blk + .blk { border-top: 1px dashed var(--rule); }
+#cards-research .rawtext { background: var(--band); border-radius: 10px;
+  padding: 8px 12px; }
+
+/* the category dropdown: filled like the .key chips. Custom chevron so it
+   keeps a 12px inset from the right edge (the native arrow hugs the corner
+   on macOS) */
+.catsel { font: inherit; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; min-height: 30px;
+  max-width: 240px; color: var(--sub);
+  border: 2px solid var(--rule); border-radius: 10px;
+  padding: 4px 34px 4px 12px; appearance: none; -webkit-appearance: none;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238894a6' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center;
+  background-size: 14px; }
+.catsel.picked { color: var(--green); }
+
+/* ---- Hermes audit: one card per category with findings -------------------- */
+
+.aud .p-head { cursor: default; }
+.aud .c-body { padding: 6px 0 12px; gap: 8px; }
+/* findings and notes are prose several lines long, so both wrap; a note is
+   the run's own aside, so it reads smaller and greyer. The finding row is the
+   item row of the other areas: text, then the key column. */
+.aud-find { display: flex; align-items: center; gap: 12px;
+  padding: 6px var(--pad-x); line-height: 1.55; }
+.aud-note { padding: 4px var(--pad-x); line-height: 1.55;
+  color: var(--sub); font-size: 13px; }
+/* ---- text-size levels -----------------------------------------------------
+   m and l are the handcrafted bigger readings of the page (the bar's A keys
+   set data-text on the root). s needs no rules — the base styles are s. */
+
+html[data-text="m"] body { font-size: 17px; }
+html[data-text="m"] .p-head .t { font-size: 17px; }
+html[data-text="m"] .b-meta, html[data-text="m"] .b-label,
+html[data-text="m"] .fv, html[data-text="m"] .fin-amt { font-size: 15.5px; }
+html[data-text="m"] .b-links a, html[data-text="m"] .b-why,
+html[data-text="m"] .aud-note { font-size: 15px; }
+html[data-text="m"] .b-err, html[data-text="m"] .a-info,
+html[data-text="m"] .a-detail { font-size: 14px; }
+html[data-text="m"] .empty { font-size: 14.5px; }
+html[data-text="m"] .b-status { font-size: 13.5px; }
+html[data-text="m"] .json, html[data-text="m"] .newform input,
+html[data-text="m"] .key.rawbtn { font-size: 14px; }
+html[data-text="m"] .key, html[data-text="m"] .catsel { font-size: 12.5px;
+  min-height: 34px; }
+html[data-text="m"] .fin-keys .catsel { width: 185px; }
+html[data-text="m"] .sq { width: 52px; height: 45px; }
+html[data-text="m"] .sq .svg-icon { width: 19px; height: 19px; }
+html[data-text="m"] .area-h { font-size: 15.5px; }
+html[data-text="m"] .a-ic .svg-icon { width: 16px; height: 16px; }
+html[data-text="m"] .stat { font-size: 12px; }
+html[data-text="m"] .verb { font-size: 9.5px; }
+html[data-text="m"] .fin-label { font-size: 12px; }
+html[data-text="m"] .gone-tag { font-size: 10.5px; }
+html[data-text="m"] .fk { font-size: 12px; }
+html[data-text="m"] .bicon .svg-icon { width: 22px; height: 22px; }
+html[data-text="m"] .tilebox { width: 46px; }
+html[data-text="m"] .atile .trow { font-size: 13.5px; }
+html[data-text="m"] .atile .tcount { font-size: 24px; }
+html[data-text="m"] .atile .tstat { font-size: 12px; }
+html[data-text="m"] .atile .tstat .svg-icon { width: 12.5px; height: 12.5px; }
+html[data-text="m"] .schip { font-size: 13.5px; min-height: 31px; }
+html[data-text="m"] .upname { font-size: 15.5px; width: 100px; }
+html[data-text="m"] .upstat { font-size: 14px; }
+
+html[data-text="l"] body { font-size: 19px; }
+html[data-text="l"] .p-head .t { font-size: 19px; }
+html[data-text="l"] .b-meta, html[data-text="l"] .b-label,
+html[data-text="l"] .fv, html[data-text="l"] .fin-amt { font-size: 17.5px; }
+html[data-text="l"] .b-links a, html[data-text="l"] .b-why,
+html[data-text="l"] .aud-note { font-size: 17px; }
+html[data-text="l"] .b-err, html[data-text="l"] .a-info,
+html[data-text="l"] .a-detail { font-size: 16px; }
+html[data-text="l"] .empty { font-size: 16.5px; }
+html[data-text="l"] .b-status { font-size: 15px; }
+html[data-text="l"] .json, html[data-text="l"] .newform input,
+html[data-text="l"] .key.rawbtn { font-size: 15.5px; }
+html[data-text="l"] .key, html[data-text="l"] .catsel { font-size: 14px;
+  min-height: 38px; }
+html[data-text="l"] .fin-keys .catsel { width: 200px; }
+html[data-text="l"] .sq { width: 58px; height: 50px; }
+html[data-text="l"] .sq .svg-icon { width: 21px; height: 21px; }
+html[data-text="l"] .area-h { font-size: 17.5px; }
+html[data-text="l"] .a-ic .svg-icon { width: 18px; height: 18px; }
+html[data-text="l"] .stat { font-size: 13.5px; }
+html[data-text="l"] .verb { font-size: 10.5px; }
+html[data-text="l"] .fin-label { font-size: 13px; }
+html[data-text="l"] .gone-tag { font-size: 11.5px; }
+html[data-text="l"] .fk { font-size: 13.5px; }
+html[data-text="l"] .bicon .svg-icon { width: 24px; height: 24px; }
+html[data-text="l"] .tilebox { width: 50px; }
+html[data-text="l"] .atile .trow { font-size: 15px; }
+html[data-text="l"] .atile .tcount { font-size: 26px; }
+html[data-text="l"] .atile .tstat { font-size: 13.5px; }
+html[data-text="l"] .atile .tstat .svg-icon { width: 14px; height: 14px; }
+html[data-text="l"] .schip { font-size: 15px; min-height: 34px; }
+html[data-text="l"] .upname { font-size: 17.5px; width: 110px; }
+html[data-text="l"] .upstat { font-size: 16px; }
+
+@media (max-width: 600px) {
+  body { font-size: 14.5px; }
+  .wrap { padding: 2px 0.8rem 2.5rem; --pad-x: 12px; }
+  .b-detail { padding-left: 0; }
+  .tilebox { width: 38px; }
+  .bicon .svg-icon { width: 19px; height: 19px; }
+  /* the key cluster gets its own line; the picker fills what the other
+     keys leave over */
+  .fin-keys { width: 100%; }
+  .fin-keys .catsel { flex: 1; width: auto; min-width: 110px; }
+  .morerow, .newform { justify-content: flex-start; }
+}
+</style>
+<!-- last, so the in-flight and armed looks override a key's own colors:
+     .key.inflight and .key.green carry the same weight, so the later file
+     wins and a busy key drops its green for the blue in-flight chip -->
+<link rel="stylesheet" href="/tap-feedback.css">
+</head>
+<body data-bar="actions">
+
+<header class="bar"></header>
+
+<div class="strip" id="strip"></div>
+
+<main class="wrap">
+  <div class="tiles" id="tiles"></div>
+  <!-- an area: a panel of control rows, then its cards. The first row is the
+       area's own header — icon, name and status line — with that area's keys
+       on its right, so the title row and the control row are one row. Report
+       and research are the exceptions, their headers standing above their
+       panels: report's rows are named by hand, because its keys pick
+       report parts, which do not divide the way an area's do, and research
+       has one console row per topic. System has no control panel — its keys
+       belong to its console rows, one timer and one key each. -->
+  <section class="area" id="area-emails">
+    <section class="panel">
+      <div class="upitem">
+        <div class="area-top" id="head-emails">
+          <span class="a-ic emails"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7"/><rect x="2" y="4" width="20" height="16" rx="2"/></svg></span>
+          <h2 class="area-h">emails</h2>
+          <span class="a-info"><span id="job-line"></span><span id="emails-count"></span></span>
+        </div>
+        <span class="upkeys">
+          <button class="key" id="emails-hide" disabled>hide finished</button>
+          <button class="key" id="rescan"
+            title="scan the inbox now — the same run the scheduled job makes">rescan</button>
+          <button class="key amber" id="reset-all"
+            title="forget every reviewed email — the next scan starts from scratch">reset</button>
+        </span>
+      </div>
+    </section>
+    <div id="cards-emails"></div>
+  </section>
+
+  <section class="area" id="area-messages">
+    <section class="panel">
+      <div class="upitem">
+        <div class="area-top" id="head-messages">
+          <span class="a-ic messages"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg></span>
+          <h2 class="area-h">messages</h2>
+          <span class="a-info" id="msg-job-line"></span>
+        </div>
+        <span class="upkeys">
+          <button class="key" id="msg-hide" disabled>hide finished</button>
+          <button class="key" id="msg-skip" disabled>skip all</button>
+          <button class="key" id="msg-rescan"
+            title="scan the watched chats now — the same run the scheduled job makes">rescan</button>
+          <button class="key amber" id="msg-reset"
+            title="clear the list and forget every scanned attachment — the next scan re-proposes whatever is still in the window">reset</button>
+        </span>
+      </div>
+    </section>
+    <div id="cards-messages"></div>
+  </section>
+
+  <section class="area" id="area-finance">
+    <section class="panel">
+      <div class="upitem">
+        <div class="area-top" id="head-finance">
+          <span class="a-ic finance"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
+          <h2 class="area-h">finance</h2>
+          <span class="a-info"><span id="fin-job-line"></span><span id="fin-count"></span></span>
+        </div>
+        <span class="upkeys">
+          <button class="key" id="fin-hide" disabled>hide finished</button>
+          <button class="key green" id="fin-submit-all" disabled>submit all</button>
+          <button class="key" id="fin-rescan"
+            title="download a fresh budget copy, then rebuild the queue">rescan</button>
+          <a class="key" href="https://mac-mini.your-tailnet.ts.net:52737/budget"
+            target="_blank" rel="noopener"
+            title="open the budget in Actual">budget</a>
+          <a class="key" href="https://mac-mini.your-tailnet.ts.net:52737/rules"
+            target="_blank" rel="noopener"
+            title="undo a wrong payee rule">rules</a>
+        </span>
+      </div>
+    </section>
+    <div id="cards-finance"></div>
+  </section>
+
+  <section class="area" id="area-report">
+    <div class="area-top" id="head-report">
+      <span class="a-ic report"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M8 18v-1"/><path d="M12 18v-6"/><path d="M16 18v-3"/></svg></span>
+      <h2 class="area-h">finance report</h2>
+      <span class="a-info" id="rep-line"></span>
+    </div>
+    <section class="panel">
+      <div class="upitem">
+        <span class="upname">unsorted</span>
+        <span class="upkeys">
+          <button class="key part" data-part="summary">summary</button>
+          <button class="key part" data-part="cashflow">cash flow</button>
+          <button class="key part" data-part="lenses">lenses</button>
+          <button class="key part" data-part="odd">odd</button>
+          <button class="key part" data-part="new">new</button>
+          <button class="key part" data-part="links">links</button>
+        </span>
+      </div>
+      <div class="upitem">
+        <span class="upname">report</span>
+        <span class="upkeys">
+          <button class="key part picked" data-part="full">full</button>
+          <button class="key green" id="rep-build"
+            title="build the picked part of the daily report and show it here — it writes nothing and sends no mail">create preview</button>
+        </span>
+      </div>
+    </section>
+    <div id="cards-finance-report"></div>
+  </section>
+
+  <section class="area" id="area-research">
+    <div class="area-top" id="head-research">
+      <span class="a-ic research"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10.065 12.493-6.18 1.318a.934.934 0 0 1-1.108-.702l-.537-2.15a1.07 1.07 0 0 1 .691-1.265l13.504-4.44"/><path d="m13.56 11.747 4.332-.924"/><path d="m16 21-3.105-6.21"/><path d="M16.485 5.94a2 2 0 0 1 1.455-2.425l1.09-.272a1 1 0 0 1 1.212.727l1.515 6.06a1 1 0 0 1-.727 1.213l-1.09.272a2 2 0 0 1-2.425-1.455z"/><path d="m6.158 8.633 1.114 4.456"/><path d="m8 21 3.105-6.21"/><circle cx="12" cy="13" r="2"/></svg></span>
+      <h2 class="area-h">research</h2>
+      <span class="a-info" id="res-line"></span>
+    </div>
+    <!-- one expandable row per topic, rendered from the state: its name and
+         state on the left, its run and delete keys on the right; open shows
+         the prompt and the report -->
+    <div id="cards-research"></div>
+  </section>
+
+  <section class="area" id="area-audit">
+    <section class="panel">
+      <div class="upitem">
+        <div class="area-top" id="head-audit">
+          <span class="a-ic audit"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/></svg></span>
+          <h2 class="area-h">audit</h2>
+          <span class="a-info"><span id="aud-line"></span><span id="aud-clean"></span></span>
+        </div>
+        <span class="upkeys">
+          <button class="key green" id="aud-run"
+            title="run the full Hermes audit — it can take an hour">run</button>
+          <button class="key" id="aud-stop" disabled
+            title="stop the run in progress; it writes no report">stop</button>
+          <button class="key" id="aud-restore" disabled
+            title="show every finding dismissed in this pass again">restore</button>
+          <button class="key amber" id="aud-reset"
+            title="forget every pass so far, so the next run is a first pass">reset</button>
+        </span>
+      </div>
+    </section>
+    <div class="a-detail" id="aud-detail" hidden></div>
+    <div id="cards-audit"></div>
+  </section>
+
+  <section class="area" id="area-system">
+    <div class="area-top" id="head-system">
+      <span class="a-ic system"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+      <h2 class="area-h">system</h2>
+    </div>
+    <!-- the console: one row per thing, its own timer and keys per row;
+         what a key does stays in its tooltip, never on the row -->
+    <section class="panel">
+      <div class="upitem">
+        <span class="upname">gateway</span>
+        <span class="upstat" id="sys-gateway-line"></span>
+        <span class="upkeys">
+          <button class="key" id="sys-gateway"
+            title="restart the hermes gateway, so it reloads the tool-approvals plugin — a chat in flight is dropped">restart</button>
+        </span>
+      </div>
+      <div class="upitem">
+        <span class="upname">webui</span>
+        <span class="upstat" id="sys-webui-line"></span>
+        <span class="upkeys">
+          <button class="key" id="sys-webui"
+            title="restart the hermes webui, so it reloads the tool-approvals plugin — an open chat page needs a reload">restart</button>
+        </span>
+      </div>
+    </section>
+  </section>
+
+</main>
+
+<script src="/bar.js"></script>
+<script src="/dev-bar.js"></script>
+<script src="/armed-button.js"></script>
+<script>
+"use strict";
+
+const WEBUI = "https://mac-mini.your-tailnet.ts.net:35422/";
+
+/* ---- helpers ------------------------------------------------------------- */
+
+const $ = (s, r = document) => r.querySelector(s);
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+/* Lucide icons (https://lucide.dev, ISC): official names, inner markup
+   verbatim from lucide-static. Static strings only — never user data.
+   The bar's icons live in /bar.js. */
+const ICONS = {
+  "message-square": '<path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/>',
+  "calendar": '<path d="M8 2v3"/> <path d="M16 2v3"/> <rect x="3" y="3" width="18" height="18" rx="2"/> <path d="M3 9h18"/>',
+  "mail": '<path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7"/> <rect x="2" y="4" width="20" height="16" rx="2"/>',
+  "mail-open": '<path d="M21.2 8.4c.5.38.8.97.8 1.6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 .8-1.6l8-6a2 2 0 0 1 2.4 0l8 6Z"/> <path d="m22 10-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 10"/>',
+  "check": '<path d="M20 6 9 17l-5-5"/>',
+  "x": '<path d="M18 6 6 18"/> <path d="m6 6 12 12"/>',
+  "chevron-down": '<path d="m6 9 6 6 6-6"/>',
+  "plus": '<path d="M5 12h14"/> <path d="M12 5v14"/>',
+  "sparkle": '<path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/>',
+  "calendar-search": '<path d="M16 2v3"/> <path d="M21 10.69V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h7.25"/> <path d="m22 21-1.875-1.875"/> <path d="M3 9h18"/> <path d="M8 2v3"/> <circle cx="18" cy="17" r="3"/>',
+  "tag": '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/> <circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
+  "wrench": '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/>',
+  "clock": '<circle cx="12" cy="12" r="10"/> <path d="M12 6v6l4 2"/>',
+  "external-link": '<path d="M15 3h6v6"/> <path d="M10 14 21 3"/> <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  "map-pin": '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/> <circle cx="12" cy="10" r="3"/>',
+  "repeat": '<path d="m17 2 4 4-4 4"/> <path d="M3 11v-1a4 4 0 0 1 4-4h14"/> <path d="m7 22-4-4 4-4"/> <path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+  "copy": '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/> <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  "dollar-sign": '<line x1="12" x2="12" y1="2" y2="22"/> <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+  "file-chart": '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/> <path d="M14 2v5a1 1 0 0 0 1 1h5"/> <path d="M8 18v-1"/> <path d="M12 18v-6"/> <path d="M16 18v-3"/>',
+  "telescope": '<path d="m10.065 12.493-6.18 1.318a.934.934 0 0 1-1.108-.702l-.537-2.15a1.07 1.07 0 0 1 .691-1.265l13.504-4.44"/> <path d="m13.56 11.747 4.332-.924"/> <path d="m16 21-3.105-6.21"/> <path d="M16.485 5.94a2 2 0 0 1 1.455-2.425l1.09-.272a1 1 0 0 1 1.212.727l1.515 6.06a1 1 0 0 1-.727 1.213l-1.09.272a2 2 0 0 1-2.425-1.455z"/> <path d="m6.158 8.633 1.114 4.456"/> <path d="m8 21 3.105-6.21"/> <circle cx="12" cy="13" r="2"/>',
+  "clipboard-check": '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/> <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/> <path d="m9 14 2 2 4-4"/>',
+  "server": '<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/> <rect width="20" height="8" x="2" y="14" rx="2" ry="2"/> <line x1="6" x2="6.01" y1="6" y2="6"/> <line x1="6" x2="6.01" y1="18" y2="18"/>',
+  "hourglass": '<path d="M5 22h14"/> <path d="M5 2h14"/> <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/> <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
+};
+
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "svg-icon");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = ICONS[name];
+  return svg;
+}
+
+/* the icon column: bare glyph, optional verb text */
+function tileEl(mcp, name, verb) {
+  const box = el("span", "tilebox");
+  const ic = el("span", "bicon " + mcp);
+  ic.append(icon(name));
+  box.append(ic);
+  if (verb) box.append(el("span", "verb " + mcp, verb));
+  return box;
+}
+
+/* ---- toolbar ------------------------------------------------------------- */
+
+/* the top bar is built and wired by /bar.js (shared with the dashboard page):
+   page tiles, the chevron row, theme key, text-size keys; tick() reports the
+   status text next to the wordmark via barStatus() */
+
+/* the budget and rules keys leave for the Actual web UI */
+for (const a of document.querySelectorAll(".upitem a.key")) a.append(icon("external-link"));
+
+/* ---- confirm taps ---------------------------------------------------------
+   Every confirm key is wired through armedButton (/armed-button.js, shared
+   with the dashboard page): arm, 5 s confirm window, blue in-flight pulse until
+   the request settles. Its registry keys armed and in-flight state by a
+   stable id, so both survive the rebuilds the polls trigger. */
+
+/* ---- formatting ---------------------------------------------------------- */
+
+const DAY_FMT = { weekday: "short", month: "short", day: "numeric" };
+
+function ago(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 10) return "now";
+  if (s < 60) return `${Math.round(s / 10) * 10} sec ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hr ago`;
+  const d = Math.round(h / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+function dur(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor(s / 60) % 60}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor(s / 3600) % 24}h`;
+}
+
+function pd(s) {   // "YYYY-MM-DD[ HH:MM]" -> {d: Date, t: "HH:MM"|null}
+  const [ds, ts] = s.split(" ");
+  const [y, m, d] = ds.split("-").map(Number);
+  return { d: new Date(y, m - 1, d), t: ts || null };
+}
+function fmtDay(s) { return pd(s).d.toLocaleDateString("en-US", DAY_FMT); }
+function fmtWhen(start, end) {
+  const a = pd(start);
+  let out = fmtDay(start) + (a.t ? " · " + a.t : "");
+  if (end) {
+    const b = pd(end);
+    if (start.slice(0, 10) === end.slice(0, 10) && b.t) out += "–" + b.t;
+    else out += " → " + fmtDay(end) + (b.t ? " " + b.t : "");
+  }
+  return out;
+}
+function repeatText(a) {
+  const n = a.repeat_interval || 1;
+  const unit = { daily: "day", weekly: "week", monthly: "month", yearly: "year" }[a.repeat];
+  let t = n > 1 ? `every ${n} ${unit}s` : a.repeat;
+  if (a.repeat_until) t += " until " + fmtDay(a.repeat_until);
+  return t;
+}
+function fromName(f) {
+  const m = f.match(/^"?([^"<]+?)"?\s*</);
+  return m ? m[1] : f;
+}
+function fromAddr(f) {
+  const m = f.match(/<([^>]+)>/);
+  return (m ? m[1] : f).toLowerCase();
+}
+/* email receivedAt stamps are UTC truncated to the minute ("2026-08-10T20:13")
+   — bare, so new Date() would read them as LOCAL time and shift every shown
+   time by the UTC offset. Re-attach the zone; zoned stamps pass through. */
+function utcDate(iso) {
+  return new Date(iso.length === 16 ? iso + ":00Z" : iso);
+}
+function shortDate(iso) {
+  return utcDate(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+function shortTime(iso) {
+  return utcDate(iso).toLocaleTimeString("en-US",
+    { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+}
+function fullDate(iso) {
+  const d = utcDate(iso);
+  return d.toLocaleDateString("en-US", { ...DAY_FMT, year: "numeric" }) + " · "
+    + d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+}
+/* which occurrences a selector row touches, spelled out with dates. A
+   span=future row uses the row's series data (repeat pattern, end,
+   occurrence count) when the server provides it. */
+function occText(a, series) {
+  if (a.span !== "future") return fmtWhen(a.start_local) + " · this occurrence only";
+  if (series && series.repeat_until) {
+    return fmtWhen(a.start_local)
+      + ` and all repeats (ends ${fmtDay(series.repeat_until)})`;
+  }
+  return fmtWhen(a.start_local) + " and all later occurrences";
+}
+/* the same target as meta segments: [icon name, text] pairs */
+function occSegs(a, series) {
+  if (a.span !== "future") {
+    return [["calendar", fmtWhen(a.start_local) + " · this occurrence only"]];
+  }
+  return [["calendar", fmtWhen(a.start_local)],
+          ["repeat", series && series.repeat_until
+            ? `all repeats (ends ${fmtDay(series.repeat_until)})`
+            : "all later occurrences"]];
+}
+/* occurrence count of a create_event's own repeat rule, first one included.
+   Monthly/yearly series keep the start's day-of-month and skip months that
+   lack it (EventKit semantics), so each occurrence is computed from the
+   start — stepping a rolled-over date (Jan 31 + 1 month = Mar 3) would
+   drift and overcount */
+function countOccurrences(a) {
+  if (!a.repeat || !a.repeat_until) return null;
+  const interval = a.repeat_interval || 1;
+  const start = pd(a.start).d;
+  const until = pd(a.repeat_until).d;
+  let n = 0;
+  if (a.repeat === "daily" || a.repeat === "weekly") {
+    const step = (a.repeat === "daily" ? 1 : 7) * interval;
+    for (let d = start; d <= until && n < 999;
+         d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + step)) n++;
+    return n;
+  }
+  const months = (a.repeat === "monthly" ? 1 : 12) * interval;
+  for (let i = 0; n < 999; i += months) {
+    const d = new Date(start.getFullYear(), start.getMonth() + i, start.getDate());
+    if (d.getDate() !== start.getDate()) continue;  /* month lacks this day — skipped */
+    if (d > until) break;
+    n++;
+  }
+  return n;
+}
+/* the service-recorded snapshot: the event's fields at save time. The
+   precheck compares all four exactly (empty stays empty); the list shows
+   the non-empty ones. */
+function snapshotLines(snap) {
+  const out = [];
+  if (!snap) return out;
+  if (snap.notes) out.push(`notes still read “${snap.notes}”`);
+  if (snap.location) out.push(`location is still “${snap.location}”`);
+  if (snap.end) out.push("still ends " + fmtWhen(snap.end));
+  if (snap.repeats) out.push(`repeat still reads “${snap.repeats}”`);
+  if (!out.length) out.push("the event is unchanged since it was proposed");
+  return out;
+}
+/* deep link into Webmail by email id. Unofficial URL shape; the folder
+   segment is ignored — the email opens wherever it lives, also after
+   archiving (checked by hand 2026-08-10) */
+function webmailUrl(m) {
+  return "https://app.webmail.com/mail/Inbox/" + encodeURIComponent(m.id);
+}
+/* every URL a row writes (notes, location) — rendered always visible on the
+   collapsed row, so a meeting link never hides behind the expand. Bare
+   domain-path links count: the agent writes "meet.google.com/xyz". */
+const URL_RE = /https?:\/\/[^\s"'<>]+|(?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s"'<>()]+/gi;
+function urlsIn(...texts) {
+  return [...new Set((texts.filter(Boolean).join(" ").match(URL_RE) || [])
+    .map((u) => u.replace(/[.,;:!?]+$/, "")))];
+}
+function linkEl(u) {
+  const a = el("a");
+  a.append(icon("map-pin"), u);
+  a.href = /^https?:/i.test(u) ? u : "https://" + u;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.addEventListener("click", (e) => e.stopPropagation());  // never toggles the row
+  return a;
+}
+
+/* ---- per-kind item content ----------------------------------------------- */
+/* Each builder turns a row into the collapsed title + meta and the expanded
+   field list: [key, value, wide?] — value may be a list. Optional extras:
+   when (a second meta line), links, amount (a dollars string for the mono
+   amount slot). Builders get (args, row); update/delete read row.series (the
+   targeted series' repeat pattern, end and occurrence count) when the server
+   provides it. */
+
+const KINDS = {
+  create_event: { mcp: "cal", icon: "calendar", verb: "new" },
+  update_event: { mcp: "cal", icon: "calendar", verb: "update" },
+  delete_event: { mcp: "cal", icon: "calendar", verb: "delete" },
+  archive_email: { mcp: "mail", icon: "mail", verb: "archive" },
+  mirror_kick: { mcp: "cal", icon: "calendar", verb: "mirror" },
+  open_email: { mcp: "mail", icon: "mail-open", verb: "open" },
+  categorize_transaction: { mcp: "fin", icon: "tag", verb: "categorize" },
+};
+
+const UPDATE_NAMES = { new_title: "title", start: "start", end: "end",
+                       location: "location", notes: "notes" };
+
+/* per-calendar Apple Calendar colors from the emails area; absent -> no dots */
+function calDot(cal) {
+  const color = ((DATA && DATA.emails.calendar_colors) || {})[cal];
+  if (!color) return null;
+  const d = el("span", "caldot");
+  d.style.setProperty("--cal-raw", color);
+  return d;
+}
+
+const BUILD = {
+  create_event(a) {
+    const fields = [["when", fmtWhen(a.start, a.end)]];
+    if (a.repeat) {
+      const n = countOccurrences(a);
+      fields.push(["repeats", repeatText(a)
+        + (n ? ` · ${n} occurrences total` : "")]);
+    }
+    if (a.location) fields.push(["location", a.location]);
+    if (a.tz) fields.push(["timezone", a.tz]);
+    if (a.notes) fields.push(["notes", a.notes, true]);
+    return {
+      title: a.title,
+      meta: [["calendar", fmtWhen(a.start, a.end)]]
+        .concat(a.repeat ? [["repeat", repeatText(a)]] : []),
+      links: urlsIn(a.location, a.notes),
+      fields,
+    };
+  },
+  update_event(a, r) {
+    const ser = r && r.series;
+    const changed = Object.keys(UPDATE_NAMES).filter((k) => k in a);
+    const fields = [["target", occText(a, ser)]];
+    if (ser && ser.repeat_until) {
+      fields.push(["repeats", `${ser.repeat} until ${fmtDay(ser.repeat_until)}`
+        + (ser.occurrences ? ` · ${ser.occurrences} occurrences total` : "")]);
+    }
+    if (a.new_title) fields.push(["new title", a.new_title]);
+    if (a.start) fields.push(["new start", fmtWhen(a.start)]);
+    if (a.end) fields.push(["new end", fmtWhen(a.end)]);
+    if (a.location) fields.push(["new location", a.location]);
+    if (a.notes) fields.push(["new notes", a.notes, true]);
+    const chk = snapshotLines(a.snapshot);
+    if (chk.length) fields.push(["runs only if", chk, true]);
+    const segs = [["calendar", fmtWhen(a.start_local) + " → "
+      + (a.start ? fmtWhen(a.start, a.end)
+                 : "changes " + changed.map((k) => UPDATE_NAMES[k]).join(", "))]];
+    if (a.span === "future") {
+      segs.push(["repeat", ser && ser.repeat_until
+        ? `all repeats (ends ${fmtDay(ser.repeat_until)})`
+        : "all later occurrences"]);
+    }
+    return {
+      title: a.title,
+      meta: segs,
+      links: urlsIn(a.location, a.notes),
+      fields,
+    };
+  },
+  delete_event(a, r) {
+    const ser = r && r.series;
+    const fields = [["target", occText(a, ser)]];
+    if (ser && ser.repeat_until) {
+      fields.push(["repeats", `${ser.repeat} until ${fmtDay(ser.repeat_until)}`
+        + (ser.occurrences ? ` · ${ser.occurrences} occurrences total` : "")]);
+    }
+    const chk = snapshotLines(a.snapshot);
+    if (chk.length) fields.push(["runs only if", chk, true]);
+    return {
+      title: a.title,
+      meta: occSegs(a, ser),
+      fields,
+    };
+  },
+  archive_email(a) {
+    const emails = a.emails || [];
+    const addrs = [...new Set(emails.map((m) => fromAddr(m.from)))];
+    // prefer a real display name; some froms are the bare address
+    const name = emails.map((m) => fromName(m.from)).find((n) => !n.includes("@"))
+      || fromName(emails[0].from);
+    const one = emails.length === 1;
+    const stamps = emails.map((m) => m.receivedAt).sort();
+    const first = shortDate(stamps[0]);
+    const last = shortDate(stamps[stamps.length - 1]);
+    const range = first === last ? first : first + " – " + last;
+    return {
+      title: one ? emails[0].subject
+        : emails.length + " emails" + (addrs.length === 1 ? " from " + name : ""),
+      meta: [[null, addrs.length === 1 ? name : addrs.length + " senders"]],
+      when: [["calendar", range]],
+      fields: [],   // the expanded state lists the emails as email rows
+    };
+  },
+  open_email(a, r) {
+    // the label is the instruction ("Reply to Sam …") and doubles as the
+    // title; the detail shows the email itself as a full row
+    const m = a.email;
+    return {
+      title: (r && r.label) || "Open the email",
+      meta: [[null, fromName(m.from)]],
+      when: [["calendar", shortDate(m.receivedAt)],
+             ["clock", shortTime(m.receivedAt)]],
+      fields: [],
+    };
+  },
+  categorize_transaction(a) {
+    // the display facts are args.transaction — stamped by the service from
+    // the ask store, so they are facts, not the agent's wording
+    const t = a.transaction;
+    const meta = [[null, [pd(t.date).d.toLocaleDateString("en-US",
+                     { month: "short", day: "numeric" }), t.account, t.notes]
+                   .filter(Boolean).join(" · ")],
+                  ["tag", a.category]];
+    if (a.update_rule) meta.push([null, " · teaches the payee rule"]);
+    return {
+      title: t.payee || "(no payee)",
+      meta,
+      amount: t.amount,
+      fields: [],
+    };
+  },
+  mirror_kick(a) {
+    // calendar names + dots live in the description line, not the title
+    const m = el("span");
+    const d1 = calDot("Personal");
+    if (d1) m.append(d1);
+    m.append("Personal to ");
+    const d2 = calDot("Family");
+    if (d2) m.append(d2);
+    m.append(`Family · refresh the next ${a.days} days`);
+    return {
+      title: "sync busy state",
+      meta: m,
+      fields: [["window", `next ${a.days} days`]],
+    };
+  },
+};
+
+/* ---- fetch loop ---------------------------------------------------------- */
+
+let DATA = null, checkedAt = null, failed = false, pageError = "";
+
+/* the cards on screen, as the JSON they were built from — every rebuild
+   goes through renderEmails(), so the poll can compare and skip a no-op
+   rebuild */
+let renderedEmails = null;
+
+/* one row executes at a time in the emails area (the server 409s a second
+   approve): while any row is in_progress the other approve keys disable
+   and the poll speeds up, so the next key re-enables within seconds */
+const anyWorking = () =>
+  !!(DATA && DATA.emails.sets.some((s) => s.rows.some((r) => r.status === "in_progress")));
+
+/* a scan run adds sets and moves the decided count for minutes, so the page
+   follows it at the same fast pace instead of waiting out the base poll */
+const scanning = () => !!(DATA && DATA.emails.job_running_since);
+
+/* rescan feedback: hermes' ledger takes seconds to show the claim, so a
+   page-started scan says "starting scan" until a poll sees the run (30 s
+   cap in case it never starts) */
+let scanStartingAt = 0;
+
+/* a retried set leaves the page at once, but its emails only come back with
+   the next scan — the heading carries that reminder until one runs */
+let retriedAt = 0;
+
+/* the finance area's own single-flight and scan state, same roles as the
+   emails pair above */
+const finWorking = () =>
+  !!(DATA && DATA.finance.cards.some((c) => c.status === "in_progress"));
+const finScanning = () => !!(DATA && DATA.finance.job_running_since);
+let finScanStartingAt = 0;
+
+/* the audit's own pair: the run holds a lock for as long as it lasts, and the
+   starting window covers the seconds between the tap and the child taking it */
+const auditRunning = () => !!(DATA && DATA.hermes_audit.running);
+let auditStartingAt = 0;
+const auditStarting = () => Date.now() - auditStartingAt < 30000;
+/* stamp of the last reset that landed: the header line reads "reset
+   successful" for a few seconds after it, then falls back to the run state */
+let auditResetAt = 0;
+
+let fastPoll = null;
+function pacePoll() {
+  clearTimeout(fastPoll);
+  fastPoll = null;
+  if (anyWorking() || scanning() || finWorking() || finScanning()
+      || msgWorking() || msgScanning()
+      || Date.now() - scanStartingAt < 30000
+      || Date.now() - msgScanStartingAt < 30000
+      || Date.now() - finScanStartingAt < 30000 || auditStarting()
+      || repBuilding() || Date.now() - repStartingAt < 30000) {
+    fastPoll = setTimeout(poll, 3000);
+    return;
+  }
+  /* an audit pass runs for up to an hour and moves a step every few minutes,
+     so it polls slower than a scan: three seconds for an hour would be
+     thousands of homeserver syncs and budget reads for a line that barely
+     moves */
+  if (auditRunning()) fastPoll = setTimeout(poll, 10000);
+}
+
+function jobLine() {
+  if (!DATA) return;
+  const em = DATA.emails;
+  const jobAt = em.job_last_run_at ? Date.parse(em.job_last_run_at) : null;
+  const lastRan = `last ran ${jobAt ? ago(Date.now() - jobAt) : "never"}`;
+  /* "scanning" comes from hermes' executions ledger via the server, so
+     scheduled runs show it too, not only ones started from this page */
+  const since = em.job_running_since ? Date.parse(em.job_running_since) : null;
+  if (!since) {
+    if (Date.now() - scanStartingAt < 30000) {
+      $("#job-line").replaceChildren(el("span", "wrk", "starting scan…"));
+      return;
+    }
+    /* staleness reads in the heading row, in the same place and amber as the
+       other areas: the failed marker first, and when the last scan did not
+       fail but is older than 11 h, its own marker — the "last ran" stamp
+       next to it belongs to the cron job, not to the scan, so it can be
+       recent while no batch has landed in days */
+    const parts = [];
+    const scannedAt = em.last_scan_at ? Date.parse(em.last_scan_at) : null;
+    /* a retried set is gone from the page, but its emails stay unproposed
+       until a scan takes them — the reminder stands until one lands */
+    if (retriedAt && (!scannedAt || scannedAt < retriedAt)) {
+      $("#job-line").replaceChildren(
+        el("span", "bad", "set retried — run rescan to propose its emails again"),
+        `, ${lastRan}`);
+      return;
+    }
+    if (em.last_scan_status === "failed")
+      parts.push(el("span", "bad", "last scan failed"), ", ");
+    /* 11 h = three missed scans at the every-3-hours cadence, plus 2 h
+       slack so one late run does not trip it */
+    else if (!scannedAt || Date.now() - scannedAt > 11 * 3600 * 1000)
+      parts.push(el("span", "bad", "no scan in over 11 hr"), ", ");
+    parts.push(lastRan);
+    $("#job-line").replaceChildren(...parts);
+    return;
+  }
+  scanStartingAt = 0;
+  /* the decided count belongs to this run only once its own scan has
+     handed the batch over — an older stamp means an older run's batch */
+  const scanAt = em.last_scan_at ? Date.parse(em.last_scan_at) : null;
+  const decided = scanAt && scanAt >= since && em.batch_total
+    ? `, ${em.batch_decided}/${em.batch_total} decided` : "";
+  $("#job-line").replaceChildren(
+    el("span", "wrk", `scanning (${dur(Date.now() - since)})${decided}`),
+    `, ${lastRan}`);
+}
+
+/* the finance heading row's scan status: last-run time, a running indicator
+   with elapsed time, and a failed marker when the last run failed — the
+   stamps cover finance-daily and finance-uncategorized together */
+function finJobLine() {
+  if (!DATA) return;
+  const fin = DATA.finance;
+  const jobAt = fin.job_last_run_at ? Date.parse(fin.job_last_run_at) : null;
+  const lastRan = `last ran ${jobAt ? ago(Date.now() - jobAt) : "never"}`;
+  const since = fin.job_running_since ? Date.parse(fin.job_running_since) : null;
+  if (since) {
+    finScanStartingAt = 0;
+    $("#fin-job-line").replaceChildren(
+      el("span", "wrk", `scanning (${dur(Date.now() - since)})`), `, ${lastRan}`);
+    return;
+  }
+  if (Date.now() - finScanStartingAt < 30000) {
+    $("#fin-job-line").replaceChildren(el("span", "wrk", "starting scan…"));
+    return;
+  }
+  const parts = [];
+  if (fin.job_last_failed) parts.push(el("span", "bad", "last run failed"), ", ");
+  parts.push(lastRan);
+  $("#fin-job-line").replaceChildren(...parts);
+}
+
+/* the hermes-audit heading row: where the run is now, or when the last pass
+   landed, plus the detail row under the heading rule. The audit's stamps are
+   local wall-clock ISO without a zone (they come from datetime.now()), so
+   they parse as local time, not UTC. */
+function auditLine() {
+  if (!DATA) return;
+  const a = DATA.hermes_audit;
+  const line = $("#aud-line");
+  const detail = $("#aud-detail");
+  detail.hidden = true;   /* only a run in flight fills it */
+  const run = a.run;
+  /* a reset that just landed reads "reset successful" in the same blue as
+     work under way — the reset leaves no run behind, so without this the
+     line would drop straight to "no run recorded yet" */
+  if (Date.now() - auditResetAt < 10000) {
+    line.replaceChildren(el("span", "wrk", "reset successful"));
+    return;
+  }
+  if (a.running && run) {
+    const since = run.started_at ? Date.parse(run.started_at) : null;
+    /* categories that have come back, never the step ordinal: the run works
+       in its own order (the github watch goes first, because it feeds later
+       gates), so a step number would disagree with the card numbers, which
+       are the report's order */
+    const done = (run.categories || []).filter(
+      (c) => c.state === "ok" || c.state === "warn").length;
+    line.replaceChildren(el("span", "wrk",
+      `running${since ? ` (${dur(Date.now() - since)})` : ""}`
+      + `, ${done} of ${run.total} done`));
+    /* the category and the LLM call share the row under the heading rule:
+       on the heading itself they are wider than a phone, and that row cuts
+       off what does not fit. One LLM call can hold a category for an hour,
+       so a step that has not moved is normal — naming the call in flight is
+       what tells a slow model from a hung one. */
+    let text = `Progress: ${run.category}`;
+    if (run.llm) {
+      const at = run.llm_started ? Date.parse(run.llm_started) : null;
+      text += ` · LLM call: ${run.llm}`
+        + (at ? ` (${dur(Date.now() - at)})` : "");
+    }
+    detail.textContent = text;
+    detail.hidden = false;
+    return;
+  }
+  if (a.running || auditStarting()) {
+    line.replaceChildren(el("span", "wrk", "starting run…"));
+    return;
+  }
+  if (!run) {
+    line.replaceChildren(a.error
+      ? el("span", "bad", "last run could not start")
+      : document.createTextNode("no run recorded yet"));
+    return;
+  }
+  if (!run.finished_at) {
+    line.replaceChildren(el("span", "bad", "last run ended without a report"));
+    return;
+  }
+  /* a finished pass with newer stderr means the last start never got as far
+     as its own record, so the cards below belong to the pass before it */
+  if (a.error) {
+    line.replaceChildren(el("span", "bad", "last run could not start"),
+      `, pass below from ${ago(Date.now() - Date.parse(run.finished_at))}`);
+    return;
+  }
+  /* a scheduled run that died before audit.py wrote anything leaves no trace
+     in the record or the stderr file — only the cron job's own stamps know */
+  if (a.job_last_failed && a.job_last_run_at
+      && Date.parse(a.job_last_run_at) > Date.parse(run.finished_at)) {
+    line.replaceChildren(el("span", "bad", "last run failed"),
+      `, pass below from ${ago(Date.now() - Date.parse(run.finished_at))}`);
+    return;
+  }
+  line.textContent = "last ran " + ago(Date.now() - Date.parse(run.finished_at));
+}
+
+/* how long each restartable process has been up, one console row each: the
+   audit's staleness finding is about a process older than the plugin
+   deploy, so the age is what says whether a restart landed. Redrawn by
+   tick() too, so it grows between polls. */
+function sysLine() {
+  if (!DATA) return;
+  for (const name of ["gateway", "webui"]) {
+    const at = DATA.system[name];
+    $("#sys-" + name + "-line").textContent =
+      at ? `started ${ago(Date.now() - Date.parse(at))}` : "not running";
+  }
+}
+
+function tick() {
+  const stamp = $("#stamp");
+  stamp.classList.toggle("bad", failed || !!pageError);
+  stamp.textContent = checkedAt ? "updated " + ago(Date.now() - checkedAt)
+                                : "connecting…";
+  const strip = $("#page-error");
+  strip.textContent = pageError;
+  strip.hidden = !pageError;
+  /* the wordmark's status text: OFFLINE when polls fail, WARN while the
+     iris-status thread reports issues (or the check itself failed) — empty
+     until the first poll */
+  if (checkedAt) {
+    const n = DATA && DATA.status_issues;
+    barStatus(failed ? "off" : pageError || n ? "warn" : "ok",
+      n > 0 ? `${n} issue${n === 1 ? "" : "s"} — see the dashboard`
+            : n === -1 ? "status check failed" : "");
+  }
+  if (pageError) return;  /* the meta lines read DATA and may be what broke */
+  jobLine();  /* the scan timers move between polls */
+  finJobLine();
+  repLine();
+  resLine();
+  /* a research row's "started" note expires ten seconds after the tap */
+  if (resStarted.size) renderResearch();
+  msgJobLine();
+  auditLine();
+  sysLine();
+  renderTiles();  /* the tiles' shorthand ages move between polls too */
+}
+
+function renderMeta() {
+  jobLine();
+  finJobLine();
+  repLine();
+  resLine();
+  msgJobLine();
+  auditLine();
+  sysLine();
+  /* the counts ride the end of each area's scan line, in their shortest
+     form. 0 emails means "no provably-complete inbox listing yet", so that
+     count drops out */
+  const inbox = DATA.emails.inbox_count;
+  $("#emails-count").textContent = inbox ? `, ${inbox} in inbox` : "";
+  const fc = $("#fin-count");
+  const fbits = [];
+  /* hidden duplicates: cards not rendered because an email card holds their
+     transaction — counted here so a short scan group reads as deduped, not
+     missing */
+  const dups = DATA.finance.cards.length - finVisibleCards().length;
+  if (dups) fbits.push(`${dups} duplicate${dups === 1 ? "" : "s"}`);
+  /* open categorize asks: the questions are mailed, the reply still out —
+     counted so an ask never expires in silence (14 days, then the scan
+     prunes it). Who each went to and when is in the line's tooltip */
+  const asks = DATA.finance.open_asks || [];
+  if (asks.length) fbits.push(`${asks.length} ask${asks.length === 1 ? "" : "s"} out`);
+  fc.textContent = fbits.length ? ", " + fbits.join(", ") : "";
+  if (asks.length)
+    fc.title = asks.map((a) =>
+      `categorize ask out to ${a.to_addr} — ${a.items} item${a.items === 1 ? "" : "s"}, sent ${fmtDay(a.created_at.slice(0, 10))}`
+    ).join("\n");
+  else fc.removeAttribute("title");
+  /* hide finished: takes every finished set off the page at once, so it is
+     out while no card is finished */
+  const doneSets = DATA.emails.sets.filter(isResolved).length;
+  const clear = $("#emails-hide");
+  clear.disabled = !doneSets || armedButtonBusy("emails-hide-finished");
+  clear.title = doneSets
+    ? `take ${doneSets} finished set${doneSets === 1 ? "" : "s"} off the page`
+    : "no finished set on the page";
+  /* hide finished: takes every filed transaction off the page at once, out
+     while none is filed */
+  const doneFin = DATA.finance.cards.filter(finSettled).length;
+  const finHide = $("#fin-hide");
+  finHide.disabled = !doneFin || armedButtonBusy("fin-hide-finished");
+  finHide.title = doneFin
+    ? `take ${doneFin} filed transaction${doneFin === 1 ? "" : "s"} off the page`
+    : "no filed transaction on the page";
+  /* hide finished: takes every saved message row off the page at once, out
+     while no row is saved */
+  const doneMsgs = DATA.messages.cards.filter(
+    (c) => c.status === "success").length;
+  const msgHide = $("#msg-hide");
+  msgHide.disabled = !doneMsgs || armedButtonBusy("messages-hide-finished");
+  msgHide.title = doneMsgs
+    ? `take ${doneMsgs} saved row${doneMsgs === 1 ? "" : "s"} off the page`
+    : "no saved row on the page";
+  /* skip all: denies every message card still waiting — a denied attachment
+     never comes back, so the key says so */
+  const openMsgs = DATA.messages.cards.filter(
+    (c) => c.status === "pending" || c.status === "run_failed").length;
+  const msgSkip = $("#msg-skip");
+  msgSkip.disabled = !openMsgs || msgWorking()
+    || armedButtonBusy("messages-skip-all");
+  msgSkip.title = openMsgs
+    ? `deny ${openMsgs} attachment${openMsgs === 1 ? "" : "s"} — none comes back`
+    : "no attachment is waiting for a decision";
+  /* the starting window keeps the key grey between the firing tap and the
+     first poll that sees the run in hermes' ledger */
+  $("#rescan").disabled = scanning() || Date.now() - scanStartingAt < 30000;
+  $("#fin-rescan").disabled = finScanning() || Date.now() - finScanStartingAt < 30000;
+  $("#msg-rescan").disabled = msgScanning() || Date.now() - msgScanStartingAt < 30000;
+  $("#rep-build").disabled = repBuilding() || Date.now() - repStartingAt < 30000;
+  /* one run at a time: run and reset are out while a run holds the lock,
+     stop only exists while one does (reset would be refused by audit.py
+     anyway — the key is grey so the tap never has to fail) */
+  const busy = auditRunning() || auditStarting();
+  $("#aud-run").disabled = busy;
+  $("#aud-reset").disabled = busy;
+  $("#aud-stop").disabled = !auditRunning();
+  syncSubmitAll();
+}
+
+/* ---- glance tiles + view -------------------------------------------------- */
+/* One tile per area, led by the queue tile: the count of open items, one
+   shorthand status line, amber when the area's scan failed or a process is
+   down. A tile picks the view — the queue tile stacks emails, messages and
+   finance, an area tile shows it alone — and the choice sticks in
+   localStorage, per device and per
+   origin, like the bar's prefs. The strip mirrors the tiles as icon+count
+   chips pinned under the bar while the grid is scrolled out of view.
+   Counts: emails/finance/messages count the rows waiting for a decision,
+   audit the findings left. The queue tile counts emails + messages +
+   finance only. */
+
+localStorage.removeItem("iris-areas-collapsed");   /* the old collapse UI's store */
+const VIEW_KEY = "iris-actions-view";
+const AREA_IDS = ["emails", "messages", "finance", "report", "research",
+                  "audit", "system"];
+/* the areas the queue view stacks, its tile sums and its icons name */
+const QUEUE_IDS = ["emails", "messages", "finance"];
+let view = localStorage.getItem(VIEW_KEY);
+if (view !== "queue" && !AREA_IDS.includes(view)) view = "queue";
+
+/* "2.1 hr" / "3 d" — the tiles' short form of ago() */
+function shortAgo(ms) {
+  const m = Math.round(ms / 60000);
+  if (m < 60) return `${Math.max(m, 0)} min`;
+  const h = Math.round(m / 6) / 10;
+  if (h < 24) return `${h.toFixed(1)} hr`;
+  return `${Math.round(h / 24)} d`;
+}
+
+/* "45m" / "2.1h" / "3d" — the prev/next stamps' compact span form */
+function tinyDur(ms) {
+  const m = Math.max(Math.round(Math.abs(ms) / 60000), 0);
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 6) / 10;
+  if (h < 24) return `${h.toFixed(1)}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+/* the last run's age behind a check glyph (done), the time to the
+   scheduled run behind an hourglass (waiting); a missing stamp drops its
+   half. Returns a fragment — the tile status line takes nodes as well as
+   strings. */
+function prevNext(prevAt, nextAt) {
+  const f = document.createDocumentFragment();
+  if (prevAt)
+    f.append(icon("check"), " " + tinyDur(Date.now() - Date.parse(prevAt)));
+  if (prevAt && nextAt) f.append(" · ");
+  if (nextAt)
+    f.append(icon("hourglass"), " " + tinyDur(Date.parse(nextAt) - Date.now()));
+  return f;
+}
+
+/* per-area tile facts: name, icon, open count (null = no count), shorthand
+   status segments [class, text] — "bad" also marks the tile and its strip
+   chip amber. The scanned areas' shorthand is the prev/next run stamps;
+   the rest mirrors what the area's own header line says. */
+const TILES = {
+  emails: {
+    name: "emails", icon: "mail",
+    count: () => DATA.emails.sets.reduce(
+      (n, s) => n + s.rows.filter((r) => r.status === "pending").length, 0),
+    short() {
+      const em = DATA.emails;
+      if (em.job_running_since) return [["wrk", "scanning"]];
+      if (em.last_scan_status === "failed") return [["bad", "scan failed"]];
+      const at = em.last_scan_at ? Date.parse(em.last_scan_at) : null;
+      if (!at) return [["bad", "no scan"]];
+      return [[Date.now() - at > 11 * 3600 * 1000 ? "bad" : "",
+        prevNext(em.last_scan_at, em.job_next_run_at)]];
+    },
+  },
+  finance: {
+    name: "finance", icon: "dollar-sign",
+    count: () => finVisibleCards()
+      .filter((c) => c.status === "pending").length,
+    short() {
+      const fin = DATA.finance;
+      if (fin.job_running_since) return [["wrk", "scanning"]];
+      if (fin.job_last_failed) return [["bad", "scan failed"]];
+      const f = prevNext(fin.job_last_run_at, fin.job_next_run_at);
+      return f.hasChildNodes() ? [["", f]] : [];
+    },
+  },
+  report: {
+    name: "finance report", icon: "file-chart",
+    count: () => null,
+    short() {
+      const fr = DATA.finance_report;
+      if (fr.building_since) return [["wrk", "building"]];
+      /* the newest cached part stands for the area; no build yet says
+         nothing — an empty line instead of a "no preview" placeholder */
+      const reps = Object.values(fr.reports);
+      if (!reps.length) return [];
+      const last = reps.reduce((a, b) =>
+        Date.parse(a.built_at) >= Date.parse(b.built_at) ? a : b);
+      if (last.error) return [["bad", "build failed"]];
+      return [["", "built "
+        + shortAgo(Date.now() - Date.parse(last.built_at))]];
+    },
+  },
+  research: {
+    name: "research", icon: "telescope",
+    count: () => null,
+    short() {
+      const r = DATA.research;
+      if (!r.topics.length) return [["", "no topics"]];
+      if (r.topics.some((x) => x.running)) return [["wrk", "running"]];
+      const fails = r.topics.filter((x) => x.failing).length;
+      if (fails) return [["bad", `${fails} failing`]];
+      /* the newest successful run over all topics, then the batch */
+      const last = r.topics.map((x) => x.last_run).filter(Boolean).sort().pop();
+      const pn = prevNext(last, r.next_batch);
+      if (pn.hasChildNodes()) return [["", pn]];
+      return [["", `${r.topics.length} topic${r.topics.length === 1 ? "" : "s"}`]];
+    },
+  },
+  messages: {
+    name: "messages", icon: "message-square",
+    count: () => DATA.messages.cards.filter(
+      (c) => c.status === "pending" || c.status === "run_failed").length,
+    short() {
+      const m = DATA.messages;
+      if (m.job_running_since) return [["wrk", "scanning"]];
+      if (m.job_last_failed || (m.last_scan_status && m.last_scan_status !== "ok"))
+        return [["bad", "scan failed"]];
+      if (!m.job_last_run_at) return [["", "no scan yet"]];
+      return [["", prevNext(m.job_last_run_at, m.job_next_run_at)]];
+    },
+  },
+  audit: {
+    name: "audit", icon: "clipboard-check",
+    count: () => ((DATA.hermes_audit.run || {}).categories || [])
+      .filter((c) => c.state === "warn")
+      .reduce((n, c) => n + c.findings.length, 0),
+    short() {
+      const a = DATA.hermes_audit;
+      if (a.running) return [["wrk", "running"]];
+      if (!a.run) return a.error ? [["bad", "failed"]] : [["", "no run yet"]];
+      if (!a.run.finished_at) return [["bad", "no report"]];
+      if (a.error) return [["bad", "failed"]];
+      /* a scheduled run that died before audit.py wrote its record shows only
+         in the cron job's own stamps */
+      if (a.job_last_failed && a.job_last_run_at
+          && Date.parse(a.job_last_run_at) > Date.parse(a.run.finished_at))
+        return [["bad", "failed"]];
+      return [["", prevNext(a.run.finished_at, a.job_next_run_at)]];
+    },
+  },
+  system: {
+    name: "system", icon: "server",
+    count: () => null,
+    short() {
+      const down = ["gateway", "webui"].filter((n) => !DATA.system[n]);
+      if (down.length) return [["bad", down.join(" + ") + " down"]];
+      return [];
+    },
+  },
+};
+const TILE_ICONS = { emails: "mail",
+  finance: "dollar-sign", report: "file-chart", research: "telescope",
+  messages: "message-square", audit: "clipboard-check", system: "server" };
+
+function renderTiles() {
+  if (!DATA) return;
+  const counts = {};
+  for (const id of AREA_IDS) counts[id] = TILES[id].count();
+  const total = QUEUE_IDS.reduce((n, id) => n + (counts[id] || 0), 0);
+  const host = $("#tiles");
+  host.replaceChildren();
+  const mk = (id, name, count, short) => {
+    const b = el("button", "atile " + id + (view === id ? " sel" : ""));
+    const trow = el("span", "trow");
+    if (id === "queue") trow.append(...QUEUE_IDS.map((q) => icon(TILE_ICONS[q])));
+    else trow.append(icon(TILE_ICONS[id]), el("span", "nm", name));
+    b.append(trow);
+    const bot = el("span", "tbot");
+    if (count != null) bot.append(el("span", "tcount", String(count)));
+    const stat = el("span", "tstat");
+    for (const [cls, text] of short) {
+      const seg = el("span", cls);
+      seg.append(text);   /* a string or a prevNext fragment */
+      stat.append(seg);
+    }
+    bot.append(stat);
+    b.append(bot);
+    b.addEventListener("click", () => setView(id, false));
+    return b;
+  };
+  host.append(mk("queue", null, total, [["", "queue"]]));
+  for (const id of AREA_IDS)
+    host.append(mk(id, TILES[id].name, counts[id], TILES[id].short()));
+  renderStrip(counts, total);
+}
+
+function renderStrip(counts, total) {
+  const host = $("#strip");
+  host.replaceChildren();
+  const mk = (id, count, warn) => {
+    const c = el("button", "schip " + id + (view === id ? " on" : ""));
+    c.setAttribute("aria-label", id);
+    if (id === "queue") c.append(...QUEUE_IDS.map((q) => icon(TILE_ICONS[q])));
+    else c.append(icon(TILE_ICONS[id]));
+    if (count != null) c.append(el("span", "n", String(count)));
+    if (warn) c.append(el("span", "warndot"));
+    c.addEventListener("click", () => setView(id, true));
+    return c;
+  };
+  host.append(mk("queue", total, false));
+  for (const id of AREA_IDS)
+    host.append(mk(id, counts[id],
+      TILES[id].short().some(([cls]) => cls === "bad")));
+}
+
+/* every area carries its own keys, so a view is which areas show */
+function applyView() {
+  for (const id of AREA_IDS)
+    document.getElementById("area-" + id).classList.toggle("off",
+      view === "queue" ? !QUEUE_IDS.includes(id) : view !== id);
+}
+
+/* scroll: a strip tap lands the view's first area at the top; a tile tap
+   changes nothing about the scroll (the tiles are already on screen) */
+function setView(id, scroll) {
+  view = id;
+  localStorage.setItem(VIEW_KEY, id);
+  applyView();
+  renderTiles();
+  if (scroll)
+    document.getElementById("area-" + (id === "queue" ? QUEUE_IDS[0] : id))
+      .scrollIntoView({ block: "start" });
+}
+applyView();
+
+/* the strip shows only while the tile grid is out of view */
+new IntersectionObserver(([entry]) =>
+  $("#strip").classList.toggle("show", !entry.isIntersecting),
+  { rootMargin: "-48px 0px 0px 0px" }).observe($("#tiles"));
+
+async function poll() {
+  try {
+    const r = await fetch("/api/state");
+    if (!r.ok) throw new Error(r.status);
+    DATA = await r.json();
+    checkedAt = Date.now();
+    failed = false;
+  } catch {
+    failed = true;
+    tick();
+    return;
+  }
+  /* a render pass that throws (e.g. the JSON missing an area the page
+     expects) must show as an error, never as a page that looks fine
+     but stays empty */
+  try {
+    renderMeta();
+    /* a text selection or a focused button must survive the poll: rebuild
+       an area only when its cards actually differ from the ones on screen
+       (armed and in-flight keys survive rebuilds via armedButton's registry) */
+    if (JSON.stringify(DATA.emails.sets) !== renderedEmails) renderEmails();
+    if (finSnapshot() !== renderedFinance) renderFinance();
+    if (repSnapshot() !== renderedReport) renderReport();
+    if (resSnapshot() !== renderedResearch) renderResearch();
+    if (msgSnapshot() !== renderedMessages) renderMessages();
+    if (auditSnapshot() !== renderedAudit) renderAudit();
+    pageError = "";
+    pacePoll();
+  } catch (e) {
+    pageError = "page error: " + e.message;
+  }
+  tick();
+}
+
+/* ---- open/closed state, kept outside DATA so it survives polls ----------- */
+
+const openBlocks = new Set();          // "setid/rowid" keys of expanded items
+const cardClosed = new Map();          // set id -> user's toggle choice
+
+const isResolved = (s) => s.state === "resolved";
+const isClosed = (s) =>
+  cardClosed.has(s.id) ? cardClosed.get(s.id) : isResolved(s);
+
+/* whole rows toggle open/closed — but not when the click lands on a button
+   or link, and not when the user just dragged to select text. render is the
+   area's own rebuild; the email rows leave it unset */
+function toggler(key, render) {
+  return (e) => {
+    if (e.target.closest("button, a")) return;
+    const sel = window.getSelection();
+    if (sel && sel.type === "Range") return;
+    if (openBlocks.has(key)) openBlocks.delete(key); else openBlocks.add(key);
+    (render || renderEmails)();
+  };
+}
+
+/* ---- item builders ------------------------------------------------------- */
+
+function fieldEl(k, v, wide) {
+  const f = el("div", "field" + (wide ? " wide" : ""));
+  f.append(el("div", "fk", k));
+  (Array.isArray(v) ? v : [v]).forEach((line) => f.append(el("div", "fv", line)));
+  return f;
+}
+
+/* one .b-meta line: a plain string, a node, {clamp: text}, or a list of
+   [icon name | null, text-or-node] segments */
+function metaEl(line) {
+  if (line.clamp !== undefined) return el("div", "b-meta clamp", line.clamp);
+  const m = el("div", "b-meta");
+  if (typeof line === "string") m.textContent = line;
+  else if (!Array.isArray(line)) m.append(line);
+  else line.forEach(([ic, t]) => { if (ic) m.append(icon(ic)); m.append(t); });
+  return m;
+}
+
+/* the one row every area builds from: a main line — the tile, then the text
+   column (title, meta lines, why, links, error), then amount, status and
+   keys on the right — plus an optional expandable area. Slots not passed
+   are simply absent; every class is one the CSS already knows.
+   o: {cls, mainCls, key, onToggle, tile, title, done, meta, why, links, err,
+   amount, status, statusTitle, keys, expand}; a key wires the open/close
+   toggle through openBlocks, onToggle naming the area's rebuild. */
+function rowEl(o) {
+  const blk = el("div", o.cls + (o.key && openBlocks.has(o.key) ? " open" : ""));
+  const main = el("div", o.mainCls || "b-main");
+  if (o.key) main.addEventListener("click", toggler(o.key, o.onToggle));
+  if (o.tile) main.append(o.tile);
+  const tx = el("div", "b-text");
+  if (o.title !== undefined) {
+    const t = el("div", "b-title");
+    t.append(o.title);
+    if (o.done) {
+      const ok = el("span", "t-done");
+      ok.append(icon("check"));
+      t.append(ok);
+    }
+    tx.append(t);
+  }
+  (o.meta || []).forEach((line) => tx.append(metaEl(line)));
+  if (o.why) {
+    const why = el("div", "b-why");
+    why.append(icon("sparkle"), o.why);
+    tx.append(why);
+  }
+  if (o.links && o.links.length) {
+    const ln = el("div", "b-links");
+    o.links.forEach((u) => ln.append(linkEl(u)));
+    tx.append(ln);
+  }
+  if (o.err) tx.append(el("div", "b-err", o.err));
+  main.append(tx);
+  if (o.amount) main.append(o.amount);
+  if (o.status) {
+    const st = el("span", "stat" + (o.status[1] ? " " + o.status[1] : ""),
+                  o.status[0]);
+    if (o.statusTitle) st.title = o.statusTitle;
+    main.append(st);
+  }
+  if (o.keys) main.append(o.keys);
+  blk.append(main);
+  if (o.expand) blk.append(o.expand);
+  return blk;
+}
+
+/* the chat chip — the set card's "hand to iris" link and the finance row's
+   "discuss" link are the same key */
+function chatKey(prompt, title) {
+  const chat = el("a", "key chatkey");
+  chat.append(icon("message-square"), "chat");
+  chat.href = WEBUI + "?prompt=" + encodeURIComponent(prompt);
+  chat.target = "_blank";
+  chat.rel = "noopener";
+  chat.title = title;
+  return chat;
+}
+
+/* injected mail (an iris:-prefixed id) lives in the iris account — the
+   hi@ deep link cannot open it, so those rows show no go link */
+const isIris = (id) => id.startsWith("iris:");
+
+/* the panel a failed scan leaves behind — the failure's step in the head,
+   its message in the body. Finance and messages both post one */
+function scanErrorEl(err) {
+  const p = el("section", "panel fin");
+  const head = el("div", "p-head");
+  head.append(el("span", "t", "last scan failed"), el("span", "fill"),
+              el("span", "m", err.step));
+  p.append(head);
+  const body = el("div", "c-body");
+  body.append(el("div", "b-err", err.message));
+  p.append(body);
+  return p;
+}
+
+/* nothing left to act on: the line that stands where an area's cards would
+   be. A failed scan puts its own card there instead, so this only shows when
+   the area came back with nothing */
+function emptyEl(text) {
+  const d = el("div", "empty");
+  d.append(icon("check"), el("span", null, text));
+  return d;
+}
+
+/* the mono amount both finance-flavored rows show */
+function amtEl(amount) {
+  return el("span", "fin-amt" + (Number(amount) > 0 ? " pos" : ""),
+            fmtAmount(amount));
+}
+
+/* a suggestion note swaps the tile icon, per kind: a suggested time wears
+   the calendar-search; a categorize row's suggestion (the answer's own
+   wording) keeps the tag */
+const SUGGESTION_TILE = { create_event: "calendar-search" };
+
+/* right-side status per row: [word, color class] — one table for the inbox
+   action rows and the finance ledger rows */
+const STAT = {
+  in_progress: ["in progress", "wrk"], success: ["done", ""],
+  done: ["done", ""], already_handled: ["already handled", ""],
+  denied: ["denied", ""], failed: ["failed", "bad"],
+  run_failed: ["run failed", "bad"], precheck_failed: ["precheck failed", "bad"],
+  unknown: ["issue", "bad"],
+};
+const SETTLED = ["success", "denied", "run_failed", "precheck_failed", "unknown"];
+const BAD = ["run_failed", "precheck_failed", "unknown"];
+
+/* args as a colorized JSON block: spans only, textContent only */
+function jsonEl(v) {
+  const pre = el("pre", "json");
+  const put = (cls, text) => pre.append(cls ? el("span", cls, text) : text);
+  (function walk(v, ind) {
+    if (typeof v === "string") put("js", JSON.stringify(v));
+    else if (typeof v === "number") put("jn", String(v));
+    else if (v === true || v === false || v === null) put("jb", String(v));
+    else if (Array.isArray(v)) {
+      if (!v.length) { put(null, "[]"); return; }
+      put(null, "[\n");
+      v.forEach((x, i) => {
+        put(null, " ".repeat(ind + 2));
+        walk(x, ind + 2);
+        put(null, (i < v.length - 1 ? "," : "") + "\n");
+      });
+      put(null, " ".repeat(ind) + "]");
+    } else {
+      const ks = Object.keys(v);
+      if (!ks.length) { put(null, "{}"); return; }
+      put(null, "{\n");
+      ks.forEach((k, i) => {
+        put(null, " ".repeat(ind + 2));
+        put("jk", JSON.stringify(k));
+        put(null, ": ");
+        walk(v[k], ind + 2);
+        put(null, (i < ks.length - 1 ? "," : "") + "\n");
+      });
+      put(null, " ".repeat(ind) + "}");
+    }
+  })(v, 0);
+  return pre;
+}
+
+function analysisEl(s) {
+  const by = s.created_by || {};
+  const detail = el("div", "b-detail");
+  detail.append(el("div", "b-status",
+    ["proposed " + fullDate(s.created_at), by.job, by.session]
+      .filter(Boolean).join(" · ")));
+  return rowEl({ key: s.id + "/analysis", cls: "blk",
+                 tile: tileEl("neut", "sparkle"),
+                 meta: [{ clamp: s.rationale }], expand: detail });
+}
+
+/* the email's own text, read from the service the first time its row opens
+   and kept for the rest of the session — a set stores the snapshot facts,
+   never the body, and an email's text does not change. Map: email id ->
+   {state: loading|ok|error, text} */
+const mailBody = new Map();
+
+async function fetchMailBody(setId, emailId) {
+  mailBody.set(emailId, { state: "loading" });
+  let entry;
+  try {
+    const q = `set_id=${encodeURIComponent(setId)}`
+      + `&email_id=${encodeURIComponent(emailId)}`;
+    const res = await fetch("/api/emails/body?" + q);
+    const out = await res.json().catch(() => ({}));
+    entry = res.ok
+      ? { state: "ok", text: out.text || "" }
+      : { state: "error", text: out.error || `could not read the email (${res.status})` };
+  } catch {
+    entry = { state: "error", text: "the service is unreachable" };
+  }
+  mailBody.set(emailId, entry);
+  renderEmails();
+}
+
+/* one email row; ctx keeps the open/closed state separate when the same
+   email renders in two places (based on + an archive card) */
+function emailEl(s, m, ctx) {
+  const side = el("div", "b-side");
+  if (m.gone) side.append(el("span", "gone-tag", "left inbox"));
+  if (!isIris(m.id)) {
+    const go = el("a", "golink");
+    go.href = webmailUrl(m);
+    go.target = "_blank";
+    go.rel = "noopener";
+    go.title = "open in Webmail";
+    go.append(icon("external-link"));
+    side.append(go);
+  }
+  const detail = el("div", "b-detail");
+  detail.append(el("div", "b-status", m.from));
+  detail.append(el("div", "b-status", "received " + fullDate(m.receivedAt)));
+  /* the email's text sits under those two lines; the fetch starts on the
+     open, so a closed row costs nothing */
+  const key = s.id + "/" + m.id + (ctx ? "/" + ctx : "");
+  if (openBlocks.has(key)) {
+    const got = mailBody.get(m.id);
+    if (got === undefined) fetchMailBody(s.id, m.id);
+    if (got && got.state === "ok")
+      detail.append(el("pre", "rawtext", got.text));
+    else if (got && got.state === "error")
+      detail.append(el("div", "b-err", got.text));
+    else
+      detail.append(el("div", "b-status", "reading the email…"));
+  }
+  return rowEl({ key,
+                 cls: "blk" + (m.gone ? " gone" : ""),
+                 tile: tileEl("mail", "mail"),
+                 title: fromName(m.from),
+                 meta: [m.subject,
+                        [["calendar", shortDate(m.receivedAt)],
+                         ["clock", shortTime(m.receivedAt)]]],
+                 keys: side, expand: detail });
+}
+
+function actionEl(s, r) {
+  const key = s.id + "/" + r.id;
+  const kind = KINDS[r.kind];
+  const c = BUILD[r.kind](r.args, r);
+
+  /* the calendar name with its dot leads the first meta line */
+  const segs = [];
+  const calName = r.args.calendar;
+  if (calName) {
+    const cal = el("span");
+    const dot = calDot(calName);
+    if (dot) cal.append(dot);
+    cal.append(calName);
+    segs.push([null, cal]);
+  }
+  if (Array.isArray(c.meta)) {   // [icon name | null, text] segments
+    segs.push(...c.meta);
+  } else {
+    if (calName) segs.push([null, " · "]);
+    segs.push([null, c.meta]);
+  }
+  const meta = [segs];
+  if (c.when) meta.push(c.when);   // the timestamp on its own line
+
+  /* pending: the approve/deny chips (plus the open_email go link); anything
+     else: the status word */
+  let keys = null, status = null, statusTitle = "";
+  if (r.status === "pending") {
+    const yes = el("button", "sq yes");
+    yes.append(icon("check"));
+    yes.setAttribute("aria-label", r.kind === "open_email" ? "done" : "approve");
+    const non = el("button", "sq non");
+    non.append(icon("x"));
+    non.setAttribute("aria-label", "deny");
+    if (anyWorking()) {
+      yes.disabled = true;
+      yes.title = "another row is working";
+    } else {
+      armedButton(yes, key + "/yes", () => decide(s, r, "approve"));
+    }
+    armedButton(non, key + "/non", () => decide(s, r, "deny"));
+    const sqs = el("div", "sqs");
+    if (r.kind === "open_email" && !isIris(r.args.email.id)) {
+      // the row's own action: a plain link to the email in Webmail; the
+      // check only marks the row done (a server-side no-op)
+      const go = el("a", "sq go");
+      go.append(icon("mail-open"));
+      go.href = webmailUrl(r.args.email);
+      go.target = "_blank";
+      go.rel = "noopener";
+      go.title = "open in Webmail";
+      go.setAttribute("aria-label", "open in Webmail");
+      go.addEventListener("click", (e) => e.stopPropagation());
+      sqs.append(go);
+    }
+    sqs.append(yes, non);
+    keys = sqs;
+  } else if (STAT[r.status]) {
+    status = STAT[r.status];
+    statusTitle = r.status_text;
+  }
+
+  const detail = el("div", "b-detail");
+  // the archive and open_email labels repeat the title — skip them there
+  if (r.kind !== "archive_email" && r.kind !== "open_email")
+    detail.append(el("div", "b-label", r.label));
+  const fields = el("div", "fields");
+  c.fields.forEach(([k, v, wide]) => fields.append(fieldEl(k, v, wide)));
+  if (c.fields.length) detail.append(fields);
+  if (r.kind === "open_email") {
+    // the target email as a full row — same block as "based on", with the
+    // Webmail link; member lookup carries the gone flag
+    const member = s.emails.find((e) => e.id === r.args.email.id) || r.args.email;
+    detail.append(emailEl(s, member, "open"));
+  }
+  if (r.kind === "archive_email") {
+    // the targets as full email rows — same block as "based on", with the
+    // Webmail link; member lookup carries the gone flag
+    const wrap = el("div");
+    (r.args.emails || []).forEach((m) => {
+      const member = s.emails.find((e) => e.id === m.id) || m;
+      wrap.append(emailEl(s, member, "archive"));
+    });
+    detail.append(wrap);
+  }
+  // a failed row's error already sits under the meta line (full text
+  // once the row is open), so the detail repeats only non-error status text
+  if (r.status !== "pending" && r.status_text && !BAD.includes(r.status)) {
+    detail.append(el("div", "b-status", r.status_text));
+  }
+  const rawrow = el("div", "rawrow");
+  const rb = el("button", "key rawbtn", "{ } raw json");
+  rb.addEventListener("click", (e) => {
+    e.stopPropagation();
+    detail.classList.toggle("rawopen");
+  });
+  rawrow.append(rb);
+  detail.append(rawrow, jsonEl(r.args));
+
+  return rowEl({
+    key, cls: "blk" + (SETTLED.includes(r.status) ? " settled" : ""),
+    tile: tileEl(kind.mcp,
+                 (r.suggestion && SUGGESTION_TILE[r.kind]) || kind.icon,
+                 kind.verb),
+    title: c.title, done: r.status === "success",
+    meta, why: r.suggestion, links: c.links,
+    err: BAD.includes(r.status) ? r.status_text : "",
+    amount: c.amount ? amtEl(c.amount) : null,
+    status, statusTitle, keys, expand: detail,
+  });
+}
+
+/* ---- set panels ----------------------------------------------------------- */
+
+function sectEl(blocks) {
+  const s = el("div", "sect");
+  blocks.forEach((b) => s.append(b));
+  return s;
+}
+
+function cardEl(s) {
+  const p = el("section", "panel card"
+    + (isClosed(s) ? " closed" : "") + (isResolved(s) ? " done" : ""));
+
+  const head = el("div", "p-head");
+  const t = el("span", "t", s.title);
+  /* a resolved set wears the same green check as a finished row */
+  if (isResolved(s)) {
+    const ok = el("span", "t-done");
+    ok.append(icon("check"));
+    t.append(ok);
+  }
+  head.append(t, el("span", "fill"));
+  /* escape hatch: hand the set to iris in the webui chat instead (deep link,
+     prefilled composer, never auto-sends — email-action-links.md) */
+  head.append(chatKey(`Let's handle actions-inbox set ${s.id} by hand: ${s.title}`,
+                      "hand this set to iris in chat"));
+  /* the set's own key, right of chat — one per state of the set:
+     rows still open -> skip all (deny each of them);
+     finished -> hide (the card leaves the page);
+     stuck (pending, nothing waiting, a row failed) -> retry, which voids the
+     set and drops its emails from the ledger; the next scan then proposes
+     them again, and the heading says so until one runs. Hiding a stuck set
+     instead would leave a pending record no trim ever clears and no page
+     ever shows. */
+  const open = s.rows.filter((r) => r.status === "pending").length;
+  if (isResolved(s)) {
+    const hide = el("button", "key", "hide");
+    hide.title = "take this finished set off the page";
+    armedButton(hide, s.id + "/hide",
+                () => post("/api/emails/hide", { set_id: s.id }));
+    head.append(hide);
+  } else if (open) {
+    const skip = el("button", "key", "skip all");
+    skip.title = `deny ${open} row${open === 1 ? "" : "s"} — nothing runs`;
+    armedButton(skip, s.id + "/skip", () => skipAll(s));
+    head.append(skip);
+  } else {
+    const again = el("button", "key", "retry");
+    if (s.rows.some((r) => r.status === "in_progress")) {
+      again.disabled = true;
+      again.title = "a row is running";
+    } else {
+      again.title = "void this set — a rescan then proposes its emails again";
+      armedButton(again, s.id + "/retry", () => retrySet(s));
+    }
+    head.append(again);
+  }
+  head.addEventListener("click", (e) => {
+    if (e.target.closest("button, a")) return;
+    cardClosed.set(s.id, !isClosed(s));
+    renderEmails();
+  });
+  p.append(head);
+
+  const body = el("div", "c-body");
+  body.append(sectEl([analysisEl(s)]));
+  body.append(sectEl(s.emails.map((m) => emailEl(s, m))));
+  body.append(sectEl(s.rows.map((r) => actionEl(s, r))));
+  p.append(body);
+  return p;
+}
+
+function renderEmails() {
+  if (!DATA) return;
+  renderedEmails = JSON.stringify(DATA.emails.sets);
+  const host = $("#cards-emails");
+  host.replaceChildren();
+  const order = [...DATA.emails.sets].sort((a, b) => isResolved(a) - isResolved(b));
+  for (const s of order) host.append(cardEl(s));
+  if (!host.children.length) host.append(emptyEl("inbox is clear"));
+}
+
+
+/* ---- finance cards -------------------------------------------------------- */
+/* One ledger card per pick — email proposals under 'from email', the
+   scan's 'latest' pick under 'last', its 'random' pick under 'random' —
+   one row per proposed transaction (finVisibleCards dedupes the copies a
+   transaction proposed by two sources has). Email rows carry a two-tap
+   hide key, the email label a hide-all key — both drop proposals through
+   the skip endpoint, never transactions. The
+   dropdown pre-picks
+   the most likely category (the check key stays disabled until a category
+   is picked); the two-tap check key writes it — arm, then confirm, same as
+   the email approve keys — and the payee-rule checkbox decides whether the
+   write also teaches the rule. The checkbox starts indeterminate: the check
+   key stays disabled until the user sets it on or off. The header's green
+   submit-all key sends every valid row (category picked, rule choice made)
+   in one apply call; it stays disabled while no row is valid. A chevron
+   key opens
+   the row's extra area: the chat link and an inline create-category form
+   (group + name, an amber X that closes on one tap, its own two-tap
+   accept — the create is its own API call). All row state lives outside
+   DATA so it survives polls: picks in finPicks, rule choices in finRule,
+   approx choices in finApprox, the extra area's state in finOpen /
+   finCreating / finDraft. */
+
+let renderedFinance = null;
+const finPicks = new Map();            // transaction id -> picked category
+const finRule = new Map();             // transaction id -> payee rule on/off
+const finApprox = new Map();           // transaction id -> approx-amount rule on/off
+const finOpen = new Set();             // transaction ids with the extra area open
+const finCreating = new Set();         // ids whose create-category form is open
+const finDraft = new Map();            // id -> {group, name} typed into that form
+let finLastGroup = "";                 // group of the last created category
+
+/* filed: the transaction left the uncategorized queue for good — this page
+   wrote its category (done), or the write found it already categorized,
+   gone, split, or turned transfer (already_handled). These are the rows the
+   hide keys take off; a failed row still has a retry waiting. */
+const finSettled = (c) => c.status === "done" || c.status === "already_handled";
+
+/* the job stamps move every poll, so the rebuild compare covers the cards
+   and picker data only — the heading row repaints separately */
+const finSnapshot = () => JSON.stringify(
+  [DATA.finance.cards, DATA.finance.error, DATA.finance.categories]);
+
+/* One visible row per transaction: the email copy wins over the scan's
+   (and the first of two email copies wins), the hidden copies stay in
+   DATA. A write settles every copy at once server-side, and when the
+   email card leaves (hidden, or a new batch) the scan row renders again
+   on the next rebuild — no rescan involved. */
+function finVisibleCards() {
+  const seen = new Set();
+  const out = [];
+  for (const pick of ["email", "latest", "random"]) {
+    for (const c of DATA.finance.cards) {
+      if (c.pick !== pick || seen.has(c.transaction_id)) continue;
+      seen.add(c.transaction_id);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+function fmtAmount(a) {
+  const n = Number(a);
+  return n < 0 ? `-$${a.slice(1)}` : `+$${a}`;
+}
+
+/* the dropdown's 'group: name' form of a category. Suggestions may come as
+   the bare name (unique across groups by construction); anything not in the
+   category list resolves to null, so the check key stays disabled. */
+function qualify(name) {
+  if (!name) return null;
+  if (name.includes(": ")) return name;
+  const g = DATA.finance.categories.find((x) => x.categories.includes(name));
+  return g ? `${g.group}: ${name}` : null;
+}
+
+function finCardEl(c) {
+  const id = c.transaction_id;
+  const best = c.suggestions && c.suggestions.length ? c.suggestions[0] : null;
+  /* the dropdown defaults to the most likely category; an explicit pick wins */
+  const cat = qualify(finPicks.get(id) || (best && best.category) || null);
+
+  /* one email-like row, no icon column: payee over one gray meta line
+     (date, account, memo), a plain mono amount, then the action keys —
+     the expand chevron first, the two-tap accept at the far right */
+  /* the category cluster is a pending row's alone; a filed row keeps one
+     key, hide, and the extra area belongs to neither */
+  let keys = null, more = null;
+  if (c.status === "pending") {
+    keys = el("span", "fin-keys");
+    /* the chevron: first key of the category cluster — it opens the row's
+       extra area (chat, create category) */
+    const exp = el("button", "key exp");
+    exp.append(icon("chevron-down"));
+    exp.title = "more options";
+    exp.setAttribute("aria-expanded", finOpen.has(id));
+    exp.addEventListener("click", () => {
+      if (finOpen.has(id)) {
+        finOpen.delete(id);
+      } else {
+        finOpen.add(id);
+        /* nothing suggested -> straight into the create form */
+        if (!(c.suggestions || []).length) finCreating.add(id);
+      }
+      renderFinance();
+    });
+    keys.append(exp);
+    /* one optgroup per category group, values in the exact 'group: category'
+       form the apply endpoint resolves */
+    const sel = el("select", "catsel");
+    const ph = el("option", "", "category");
+    ph.value = "";
+    sel.append(ph);
+    for (const g of DATA.finance.categories) {
+      const og = document.createElement("optgroup");
+      og.label = g.group;
+      for (const name of g.categories) {
+        const o = el("option", "", name);
+        o.value = `${g.group}: ${name}`;
+        og.append(o);
+      }
+      sel.append(og);
+    }
+    sel.value = cat || "";
+    if (sel.value) sel.classList.add("picked");
+    if (best && cat && cat === qualify(best.category)) {
+      sel.title = best.basis === "email"
+        ? "suggested in the mail — check it before applying"
+        : best.basis === "guess"
+          ? "most likely — a guess, this payee has no category history"
+          : "most likely, from this payee's category history";
+    }
+    sel.addEventListener("change", () => {
+      if (sel.value) finPicks.set(c.transaction_id, sel.value);
+      else finPicks.delete(c.transaction_id);
+      renderFinance();
+    });
+    keys.append(sel);
+    /* accept always sets the category; the payee-rule chip decides whether
+       it also teaches the payee rule — it starts indeterminate, and the
+       accept key stays disabled until the user sets it on or off */
+    const chk = el("label", "key rulechk");
+    const box = el("input");
+    box.type = "checkbox";
+    box.checked = finRule.get(id) === true;
+    box.indeterminate = !finRule.has(id);
+    box.addEventListener("change", () => {
+      finRule.set(id, box.checked);
+      renderFinance();
+    });
+    chk.append(box, "rule");
+    keys.append(chk);
+    /* approx: with the rule on, anchor it on this row's amount with
+       Actual's "is approximately" operator (7.5% window). Inert while
+       the rule chip is off or unset */
+    const achk = el("label", "key rulechk");
+    const abox = el("input");
+    abox.type = "checkbox";
+    abox.checked = finApprox.get(id) === true;
+    abox.disabled = finRule.get(id) !== true;
+    abox.addEventListener("change", () => {
+      finApprox.set(id, abox.checked);
+      renderFinance();
+    });
+    achk.append(abox, "approx");
+    keys.append(achk);
+    /* accept: the same two-tap green check key as the inbox action rows —
+       first tap arms, second writes */
+    const apply = el("button", "sq yes");
+    apply.append(icon("check"));
+    apply.setAttribute("aria-label", "accept");
+    if (!cat) {
+      apply.disabled = true;
+      apply.title = "pick a category first";
+    } else if (!finRule.has(id)) {
+      apply.disabled = true;
+      apply.title = "set the payee rule on or off first";
+    } else if (finWorking()) {
+      apply.disabled = true;
+      apply.title = "another row is working";
+    } else {
+      apply.title = !finRule.get(id)
+        ? `set '${cat}' — payee rule untouched`
+        : finApprox.get(id) === true
+          ? `set '${cat}' and teach the payee rule for about this amount`
+          : `set '${cat}' and teach the payee rule`;
+      armedButton(apply, id + "/apply", () => finApply([{
+        transaction_id: id, category: cat,
+        update_rule: finRule.get(id) === true,
+        approx: finRule.get(id) === true && finApprox.get(id) === true }]));
+    }
+    keys.append(apply);
+    /* email cards only: hide this proposal — the transaction stays
+       uncategorized, so a duplicate's scan row shows again at once and
+       a future scan can still pick it */
+    if (c.pick === "email") {
+      const non = el("button", "sq non");
+      non.append(icon("x"));
+      non.setAttribute("aria-label", "hide");
+      non.title = "hide this proposal — the transaction stays uncategorized";
+      armedButton(non, id + "/hide",
+        () => post("/api/finance/skip", { transaction_id: id, pick: "email" }));
+      keys.append(non);
+    }
+
+    /* the extra area: chat on the left, the new-category chip on the
+       right, the create form on its own line */
+    more = el("div", "fin-more" + (finCreating.has(id) ? " creating" : ""));
+    const row1 = el("div", "morerow");
+    row1.append(chatKey(`Finance: let's discuss transaction ${id} — `
+      + `${c.payee || "(no payee)"} ${c.amount} on ${c.date}.`,
+      "discuss this transaction in chat"));
+    const add = el("button", "key addkey");
+    add.append(icon("plus"), "new category");
+    add.addEventListener("click", () => {
+      finCreating.add(id);
+      renderFinance();
+    });
+    row1.append(add);
+    more.append(row1);
+
+    /* the create form: a separate API call, so its own two-tap accept */
+    const form = el("div", "newform");
+    const draft = finDraft.get(id) || {};
+    const grp = el("select", "catsel");
+    const gp = el("option", "", "group");
+    gp.value = "";
+    grp.append(gp);
+    for (const g of DATA.finance.categories) {
+      const o = el("option", "", g.group);
+      o.value = g.group;
+      grp.append(o);
+    }
+    /* the picker starts on the last group a category was created in */
+    grp.value = draft.group || finLastGroup || "";
+    const inp = el("input");
+    inp.placeholder = "category name";
+    inp.value = draft.name || "";
+    /* typed state survives a rebuild (chip pick, poll with new data) */
+    const saveDraft = () => finDraft.set(id, { group: grp.value, name: inp.value });
+    const ok = el("button", "sq yes");
+    ok.append(icon("check"));
+    ok.setAttribute("aria-label", "create category");
+    ok.title = "create this category in Actual";
+    const valid = () => !!(grp.value && inp.value.trim());
+    /* a keystroke mid-request must not re-enable the in-flight key */
+    const syncNew = () => { ok.disabled = armedButtonBusy(id + "/create") || !valid(); };
+    grp.addEventListener("change", () => { saveDraft(); syncNew(); });
+    inp.addEventListener("input", () => { saveDraft(); syncNew(); });
+    /* the wire reads this as the state to restore after the request settles,
+       so it carries only validity, not the busy guard */
+    ok.disabled = !valid();
+    armedButton(ok, id + "/create", () => finCreateCategory(c, grp.value, inp.value.trim()));
+    /* the X closes the form on one tap — no confirmation */
+    const xbtn = el("button", "sq non");
+    xbtn.append(icon("x"));
+    xbtn.setAttribute("aria-label", "close");
+    xbtn.title = "close";
+    xbtn.addEventListener("click", () => {
+      finCreating.delete(id);
+      finDraft.delete(id);
+      renderFinance();
+    });
+    form.append(grp, inp, xbtn, ok);
+    more.append(form);
+  } else if (finSettled(c)) {
+    /* a filed row keeps one key: hide, the same key a saved message row and
+       a finished email set get. The transaction is out of the uncategorized
+       queue, so no scan proposes it again */
+    keys = el("span", "fin-keys");
+    const hide = el("button", "key", "hide");
+    hide.title = "take this filed transaction off the page";
+    armedButton(hide, id + "/hide-filed",
+                () => post("/api/finance/hide", { transaction_id: id }));
+    keys.append(hide);
+  }
+  /* done items carry no status line — the title's check says it */
+  return rowEl({
+    cls: "fin-item" + (c.status === "pending" && finOpen.has(id) ? " open" : ""),
+    mainCls: "fin-main",
+    title: c.payee || "(no payee)",
+    done: c.status === "done" || c.status === "already_handled",
+    meta: [[pd(c.date).d.toLocaleDateString("en-US",
+             { month: "short", day: "numeric" }), c.account, c.notes,
+            c.pick === "email" && c.source && c.source.subject
+              ? `mail: ${c.source.subject}` : null]
+           .filter(Boolean).join(" · ")],
+    err: c.status === "failed" ? c.status_text : "",
+    amount: amtEl(c.amount),
+    status: (c.status === "in_progress" || c.status === "failed")
+      ? STAT[c.status] : null,
+    keys, expand: more,
+  });
+}
+
+function renderFinance() {
+  if (!DATA) return;
+  renderedFinance = finSnapshot();
+  syncSubmitAll();
+  const host = $("#cards-finance");
+  host.replaceChildren();
+  if (DATA.finance.error) host.append(scanErrorEl(DATA.finance.error));
+  /* one ledger card per pick — transactions proposed from a mail first,
+     then the newest uncategorized, then the random older ones — each under
+     a small-caps label with its row count. Inside a card, completed rows
+     sink to the bottom, order otherwise unchanged */
+  const visible = finVisibleCards();
+  for (const [pick, label] of [["email", "from email"], ["latest", "last"],
+                               ["random", "random"]]) {
+    const cards = visible.filter((c) => c.pick === pick)
+      .sort((a, b) => finSettled(a) - finSettled(b));
+    if (!cards.length) continue;
+    const lab = el("div", "fin-label", `${label} ${cards.length}`);
+    if (pick === "email") {
+      /* hide all: drops every email card — the transactions stay
+         uncategorized, and a duplicate's scan row shows again at once */
+      const hide = el("button", "key", "hide all");
+      hide.title = "hide every email proposal — the transactions stay uncategorized";
+      armedButton(hide, "fin-email-hide-all",
+        () => post("/api/finance/skip", { pick: "email" }));
+      lab.append(hide);
+    }
+    host.append(lab);
+    const p = el("section", "panel card fin");
+    for (const c of cards) p.append(finCardEl(c));
+    host.append(p);
+  }
+  if (!host.children.length) host.append(emptyEl("everything is categorized"));
+}
+
+
+/* ---- finance report ------------------------------------------------------- */
+/* No cards: the part keys pick a part of the daily report — full is
+   the whole body, the rest one component alone. The create-preview key runs
+   the report script in write-free mode for the picked part (--section), and
+   the service keeps each part's last build in memory, so a part key switches
+   the panel to that part's cached text with no new run.
+   The panel is the picked part's text alone — the build that produced it, or
+   the failure that replaced it. The heading row carries the state; a build
+   takes a minute or two (seconds for the no-LLM parts), so the key greys and
+   the heading counts it up, naming the part under way. */
+
+let renderedReport = null;
+
+/* the part keys, both rows: the picked look and the taps are the same on all
+   of them */
+const REP_KEYS = document.querySelectorAll("#area-report .key.part");
+
+/* heading labels per part name */
+const REP_LABELS = { full: "full report", summary: "summary",
+                     cashflow: "cash flow", lenses: "lenses", odd: "odd",
+                     new: "new transactions", links: "links" };
+
+/* the picked part key: what the panel shows and what the create-preview key builds */
+let repPicked = "full";
+
+const repBuilding = () => !!(DATA && DATA.finance_report.building_since);
+/* the seconds between the tap and the service reporting the build, and the
+   part that tap asked for */
+let repStartingAt = 0;
+let repStartingPart = "full";
+
+const repSnapshot = () => JSON.stringify(
+  [DATA.finance_report.reports[repPicked], repPicked, repBuilding()]);
+
+function repLine() {
+  if (!DATA) return;
+  const fr = DATA.finance_report;
+  const since = fr.building_since ? Date.parse(fr.building_since) : null;
+  if (since) {
+    repStartingAt = 0;
+    $("#rep-line").replaceChildren(
+      el("span", "wrk", `building ${REP_LABELS[fr.building_section] || ""} `
+                        + `(${dur(Date.now() - since)})`));
+    return;
+  }
+  if (Date.now() - repStartingAt < 30000) {
+    $("#rep-line").replaceChildren(
+      el("span", "wrk", `starting ${REP_LABELS[repStartingPart]} build…`));
+    return;
+  }
+  /* past the build states, the line belongs to the picked part's cache */
+  const rep = fr.reports[repPicked];
+  if (!rep) {
+    $("#rep-line").textContent = `no ${REP_LABELS[repPicked]} preview yet`;
+    return;
+  }
+  const built = `built ${ago(Date.now() - Date.parse(rep.built_at))}`;
+  if (rep.error) {
+    $("#rep-line").replaceChildren(el("span", "bad", "last build failed"),
+                                   `, ${built}`);
+    return;
+  }
+  $("#rep-line").textContent = built;
+}
+
+function renderReport() {
+  renderedReport = repSnapshot();
+  for (const b of REP_KEYS)
+    b.classList.toggle("picked", b.dataset.part === repPicked);
+  const host = $("#cards-finance-report");
+  host.replaceChildren();
+  const rep = DATA.finance_report.reports[repPicked];
+  if (!rep) return;
+  const panel = el("section", "panel");
+  const body = el("div", "c-body");
+  body.append(el("pre", "rawtext report", rep.error || rep.text));
+  panel.append(body);
+  host.append(panel);
+}
+
+/* the create-preview key: the service answers at once and builds on its own thread,
+   so the tap only starts the clock — a refused call puts the line back */
+async function startReport() {
+  repStartingAt = Date.now();
+  repStartingPart = repPicked;
+  repLine();
+  if (await post("/api/finance-report/preview", { section: repPicked })) {
+    setTimeout(poll, 2000);
+  } else {
+    repStartingAt = 0;
+    repLine();
+  }
+}
+
+/* ---- research ------------------------------------------------------------- */
+/* One expandable row per vault web-research topic: the topic's name, a meta
+   line with its cadence prefix and last successful run, and its own green
+   run key and amber delete key. While the driver's log shows consecutive
+   failures the row carries an amber "failed ×N" status word; while the
+   driver's in-flight marker shows a run, a green "running" one. A chevron key
+   (or a tap on the row) opens it: the topic's prompt and the stored
+   report's text in their own banded blocks, read from the service on the
+   first open and kept while the report's updated stamp stays the same; a
+   failing open row also holds the two-tap clear key. Run spawns
+   the research driver detached: the row reads "started", then "running"
+   while the marker stays fresh, and the finished report arrives by email
+   like a batch run's; delete drops the topic's stored report and failure dump, so
+   its next run starts from scratch. The batch is one cron job, so the next
+   batch time sits in the heading line, not on the rows. */
+
+let renderedResearch = null;
+/* slug -> stamp of the run this page started: the row reads "started" for
+   ten seconds after the tap — the bridge until the driver's marker reaches
+   the page's state — then falls back to the topic's stored state.
+   tick() re-renders while any stamp lives, so the note expires on its own */
+const resStarted = new Map();
+
+const resSnapshot = () => JSON.stringify(DATA.research);
+
+/* the slug without its cadence prefix for the name, the prefix for the meta */
+const resName = (slug) => slug.replace(/^(daily|weekly)-/, "");
+const resCadence = (slug) => (slug.match(/^(daily|weekly)-/) || [])[1] || "";
+
+/* the heading line: the topic count, a green count of runs in flight, an
+   amber count of the failing ones, and the batch job's next run */
+function resLine() {
+  if (!DATA) return;
+  const line = $("#res-line");
+  const r = DATA.research;
+  if (!r.topics.length) {
+    line.textContent = "no topics yet";
+    return;
+  }
+  const runs = r.topics.filter((t) => t.running).length;
+  const fails = r.topics.filter((t) => t.failing).length;
+  const bits = [`${r.topics.length} topic${r.topics.length === 1 ? "" : "s"}`];
+  if (runs) bits.push(", ", el("span", "wrk", `${runs} running`));
+  if (fails) bits.push(", ", el("span", "bad", `${fails} failing`));
+  if (r.next_batch)
+    bits.push(`, next batch in ${tinyDur(Date.parse(r.next_batch) - Date.now())}`);
+  line.replaceChildren(...bits);
+}
+
+/* an open row's content — the topic's prompt and the report's text — read
+   from the service on the first open and kept while the report's updated
+   stamp stays the same, so a finished run or a delete triggers a re-read.
+   Map: slug -> {for: the stamp the read was made under, state:
+   loading|ok|error, question, text, updated} */
+const resBody = new Map();
+
+async function fetchResearchBody(slug, stamp) {
+  resBody.set(slug, { for: stamp, state: "loading" });
+  let entry;
+  try {
+    const res = await fetch("/api/research/report?slug="
+      + encodeURIComponent(slug));
+    const out = await res.json().catch(() => ({}));
+    entry = res.ok
+      ? { for: stamp, state: "ok", question: out.question || "",
+          text: out.report, updated: out.updated }
+      : { for: stamp, state: "error",
+          text: out.error || `could not read the report (${res.status})` };
+  } catch {
+    entry = { for: stamp, state: "error", text: "the service is unreachable" };
+  }
+  resBody.set(slug, entry);
+  renderResearch();
+}
+
+function resDetailEl(t) {
+  const detail = el("div", "b-detail");
+  if (t.failing) {
+    const wrap = el("div");
+    const clear = el("button", "key amber", "clear failure");
+    clear.title = "clear the failure flag — it comes back if the next run fails too";
+    armedButton(clear, `research-clear/${t.slug}`,
+      () => post("/api/research/clear", { slug: t.slug }));
+    wrap.append(clear);
+    detail.append(wrap);
+  }
+  /* the fetch starts on the open, so a closed row costs nothing */
+  const got = resBody.get(t.slug);
+  if (got === undefined || got.for !== t.updated)
+    fetchResearchBody(t.slug, t.updated);
+  const shown = resBody.get(t.slug);
+  if (shown && shown.state === "ok") {
+    detail.append(el("div", "b-status", "prompt"));
+    detail.append(el("pre", "rawtext", shown.question));
+    if (shown.text == null) {
+      detail.append(el("div", "b-status", "no report yet"));
+    } else {
+      detail.append(el("div", "b-status",
+        "report" + (shown.updated ? " · updated " + shown.updated : "")));
+      detail.append(el("pre", "rawtext", shown.text));
+    }
+  } else if (shown && shown.state === "error") {
+    detail.append(el("div", "b-err", shown.text));
+  } else {
+    detail.append(el("div", "b-status", "reading…"));
+  }
+  return detail;
+}
+
+function resRowEl(t) {
+  const key = "research/" + t.slug;
+  const bits = [];
+  const cad = resCadence(t.slug);
+  if (cad) bits.push(cad);
+  if (t.last_run) {
+    bits.push("ran " + ago(Date.now() - Date.parse(t.last_run)));
+    if (!t.report) bits.push("no report yet");
+  } else {
+    bits.push("no run yet");
+  }
+  let status = null;
+  let statusTitle = null;
+  const since = resStarted.get(t.slug);
+  if (t.running) {
+    resStarted.delete(t.slug);
+    status = ["running", "wrk"];
+    statusTitle = "a run is in flight — the finished report arrives by email";
+  } else if (since && Date.now() - since < 10000) {
+    status = ["started", "wrk"];
+    statusTitle = "the run started — the finished report arrives by email";
+  } else {
+    resStarted.delete(t.slug);
+    if (t.failing) {
+      status = [`failed ×${t.failing}`, "bad"];
+      statusTitle = "consecutive failed runs — the clear key sits in the open row";
+    }
+  }
+  const keys = el("span", "upkeys");
+  /* the chevron: first key of the cluster, same as the finance rows — it
+     opens the topic's prompt and report */
+  const exp = el("button", "key exp");
+  exp.append(icon("chevron-down"));
+  exp.title = "show the topic's prompt and report";
+  exp.setAttribute("aria-expanded", openBlocks.has(key));
+  exp.addEventListener("click", () => {
+    if (openBlocks.has(key)) openBlocks.delete(key); else openBlocks.add(key);
+    renderResearch();
+  });
+  keys.append(exp);
+  const run = el("button", "key green", "run");
+  run.title = "run this topic now instead of waiting for its batch — the finished report arrives by email";
+  armedButton(run, `research-run/${t.slug}`, () => startResearchRun(t.slug));
+  const del = el("button", "key amber", "delete");
+  if (t.report || t.error) {
+    del.title = "delete this topic's report — the topic stays; its next run starts from scratch";
+    armedButton(del, `research-delete/${t.slug}`,
+      () => post("/api/research/delete", { slug: t.slug }));
+  } else {
+    del.disabled = true;
+    del.title = "no report to delete";
+  }
+  keys.append(run, del);
+  return rowEl({ key, onToggle: renderResearch, cls: "blk",
+                 title: resName(t.slug),
+                 meta: [bits.join(" · ")],
+                 status, statusTitle, keys,
+                 expand: openBlocks.has(key) ? resDetailEl(t) : null });
+}
+
+function renderResearch() {
+  if (!DATA) return;
+  renderedResearch = resSnapshot();
+  const host = $("#cards-research");
+  host.replaceChildren();
+  const topics = DATA.research.topics;
+  if (!topics.length) {
+    host.append(emptyEl("no topics yet"));
+    return;
+  }
+  const p = el("section", "panel");
+  for (const t of topics) p.append(resRowEl(t));
+  host.append(p);
+}
+
+/* the run key: the stamp turns the row's status to "started" at the firing
+   tap, and a refused call puts it back; the driver writes the report file
+   itself when it finishes, so there is nothing to poll for here */
+async function startResearchRun(slug) {
+  resStarted.set(slug, Date.now());
+  renderResearch();
+  if (!await post("/api/research/run", { slug })) {
+    resStarted.delete(slug);
+    renderResearch();
+  }
+}
+
+
+/* ---- messages cards ------------------------------------------------------- */
+/* One row per proposed attachment: the LLM's clean filename over a gray meta
+   line (sender's contact name when the service resolved one, chat, date) and
+   its one-line reason. The dropdown offers
+   every records location with the LLM's pick preselected; the two-tap check
+   saves to the picked location, the two-tap X denies — a denied attachment
+   never comes back (the service's ledger remembers every verdict). A failed
+   save keeps the row actionable: the error text shows above the keys and the
+   check retries. A chevron key (rows whose attachment yielded text) opens the
+   extracted text under the row, closed until first tap. Dropdown picks and
+   open rows live outside DATA so they survive polls. */
+
+let renderedMessages = null;
+const msgPicks = new Map();            // attachment id -> picked location id
+const msgOpen = new Set();             // attachment ids with the text area open
+
+const msgWorking = () =>
+  !!(DATA && DATA.messages.cards.some((c) => c.status === "in_progress"));
+
+/* the scan stamps move every poll, so the rebuild compare covers the cards,
+   the error record, and the catalog only — the heading line repaints
+   separately */
+const msgSnapshot = () => JSON.stringify(
+  [DATA.messages.cards, DATA.messages.error, DATA.messages.locations]);
+
+/* the messages area's own scan state, same roles as the finance pair */
+const msgScanning = () => !!(DATA && DATA.messages.job_running_since);
+let msgScanStartingAt = 0;
+
+/* the messages heading row's scan status: last-run time, a running
+   indicator with elapsed time, and a failed marker when the last run or
+   scan failed — same shape as the finance line */
+function msgJobLine() {
+  if (!DATA) return;
+  const m = DATA.messages;
+  const jobAt = m.job_last_run_at ? Date.parse(m.job_last_run_at) : null;
+  const lastRan = `last ran ${jobAt ? ago(Date.now() - jobAt) : "never"}`;
+  const since = m.job_running_since ? Date.parse(m.job_running_since) : null;
+  if (since) {
+    msgScanStartingAt = 0;
+    $("#msg-job-line").replaceChildren(
+      el("span", "wrk", `scanning (${dur(Date.now() - since)})`), `, ${lastRan}`);
+    return;
+  }
+  if (Date.now() - msgScanStartingAt < 30000) {
+    $("#msg-job-line").replaceChildren(el("span", "wrk", "starting scan…"));
+    return;
+  }
+  const parts = [];
+  if (m.job_last_failed || (m.last_scan_status && m.last_scan_status !== "ok"))
+    parts.push(el("span", "bad", "last scan failed"), ", ");
+  parts.push(lastRan);
+  $("#msg-job-line").replaceChildren(...parts);
+}
+
+function msgCardEl(c) {
+  const id = c.attachment_id;
+  const meta = [[c.sender_name || c.sender, c.chat,
+    pd(c.received_at).d
+    .toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    c.original_name !== c.filename ? c.original_name : ""]
+    .filter(Boolean).join(" · ")];
+  if (c.reason) meta.push(c.reason);
+  /* pending and failed rows both take actions — a failed save retries with
+     the check key */
+  let keys = null;
+  if (c.status === "pending" || c.status === "run_failed") {
+    keys = el("span", "fin-keys");
+    /* the chevron: first key of the cluster, same as the finance rows — it
+       opens the attachment's extracted text; rows without text have none */
+    if (c.text) {
+      const exp = el("button", "key exp");
+      exp.append(icon("chevron-down"));
+      exp.title = "show the attachment's text";
+      exp.setAttribute("aria-expanded", msgOpen.has(id));
+      exp.addEventListener("click", () => {
+        if (msgOpen.has(id)) msgOpen.delete(id); else msgOpen.add(id);
+        renderMessages();
+      });
+      keys.append(exp);
+    }
+    const sel = el("select", "catsel");
+    const ph = el("option", "", "destination");
+    ph.value = "";
+    sel.append(ph);
+    for (const l of DATA.messages.locations) {
+      const o = el("option", "", l.label);
+      o.value = l.id;
+      sel.append(o);
+    }
+    sel.value = msgPicks.get(id) || c.location_id;
+    if (sel.value) sel.classList.add("picked");
+    sel.addEventListener("change", () => {
+      if (sel.value) msgPicks.set(id, sel.value);
+      else msgPicks.delete(id);
+      renderMessages();
+    });
+    keys.append(sel);
+    const yes = el("button", "sq yes");
+    yes.append(icon("check"));
+    yes.setAttribute("aria-label", "save");
+    if (!sel.value) {
+      yes.disabled = true;
+      yes.title = "pick a destination first";
+    } else if (msgWorking()) {
+      yes.disabled = true;
+      yes.title = "another row is working";
+    } else {
+      yes.title = `save to ${sel.selectedOptions[0].textContent}`;
+      armedButton(yes, id + "/save", () => msgResolve(c, "approve"));
+    }
+    keys.append(yes);
+    const non = el("button", "sq non");
+    non.append(icon("x"));
+    non.setAttribute("aria-label", "deny");
+    if (msgWorking()) {
+      non.disabled = true;
+      non.title = "another row is working";
+    } else {
+      non.title = "deny — never propose this attachment again";
+      armedButton(non, id + "/deny", () => msgResolve(c, "deny"));
+    }
+    keys.append(non);
+  } else if (c.status === "success") {
+    /* a saved row keeps one key: hide, the same key a finished email set
+       gets — the next scan would drop the row anyway */
+    keys = el("span", "fin-keys");
+    const hide = el("button", "key", "hide");
+    hide.title = "take this saved row off the page";
+    armedButton(hide, id + "/hide",
+                () => post("/api/messages/hide", { attachment_id: c.attachment_id }));
+    keys.append(hide);
+  }
+  /* the attachment's extracted text, shown by the chevron (fin-more, same as
+     the finance extra area); starts closed — msgOpen is empty until a tap */
+  let more = null;
+  if (c.text) {
+    more = el("div", "fin-more");
+    more.append(el("pre", "rawtext", c.text));
+  }
+  return rowEl({
+    cls: "fin-item" + (msgOpen.has(id) && c.text ? " open" : ""),
+    mainCls: "fin-main",
+    title: c.filename,
+    done: c.status === "success",
+    meta,
+    err: c.status === "run_failed" ? c.status_text : "",
+    status: c.status === "in_progress" ? STAT[c.status] : null,
+    keys, expand: more,
+  });
+}
+
+function renderMessages() {
+  if (!DATA) return;
+  renderedMessages = msgSnapshot();
+  const host = $("#cards-messages");
+  host.replaceChildren();
+  if (DATA.messages.error) host.append(scanErrorEl(DATA.messages.error));
+  /* finished rows sink to the bottom, order otherwise unchanged */
+  const cards = [...DATA.messages.cards]
+    .sort((a, b) => (a.status === "success") - (b.status === "success"));
+  if (cards.length) {
+    const p = el("section", "panel card fin");
+    for (const c of cards) p.append(msgCardEl(c));
+    host.append(p);
+  }
+  if (!host.children.length) host.append(emptyEl("no attachments waiting"));
+}
+
+/* "skip all": deny every card still waiting, one call at a time — the same
+   loop the email sets' skip-all key runs */
+async function msgSkipAll() {
+  for (const c of [...DATA.messages.cards]) {
+    if (c.status !== "pending" && c.status !== "run_failed") continue;
+    await msgResolve(c, "deny");
+  }
+  poll();
+}
+
+async function msgResolve(c, decision) {
+  /* a poll replaces DATA wholesale, so work on the live card; the keys leave
+     the row at the firing tap and a refused call puts the real status back */
+  const live = DATA.messages.cards
+    .find((x) => x.attachment_id === c.attachment_id);
+  if (!live || live.status === "in_progress") { poll(); return; }
+  const prev = { status: live.status, status_text: live.status_text };
+  live.status = "in_progress";
+  live.status_text = "working";
+  renderMessages();
+  const payload = { attachment_id: c.attachment_id, decision };
+  if (decision === "approve")
+    payload.location_id = msgPicks.get(c.attachment_id) || c.location_id;
+  try {
+    const res = await fetch("/api/messages/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Actions-Local": "1" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 202) {
+      msgPicks.delete(c.attachment_id);
+      pacePoll();
+      return;
+    }
+    if (res.ok) {   /* deny: the card is gone server-side */
+      DATA.messages.cards = DATA.messages.cards
+        .filter((x) => x.attachment_id !== c.attachment_id);
+      msgPicks.delete(c.attachment_id);
+      renderMessages();
+      return;
+    }
+    Object.assign(live, prev);
+    if (body.error) alert(body.error);
+    renderMessages();
+    if (res.status === 409) poll();  /* stale view: refetch */
+  } catch {
+    Object.assign(live, prev);
+    renderMessages();
+    failed = true;
+    tick();
+  }
+}
+
+
+/* ---- Hermes audit cards ---------------------------------------------------- */
+/* One card per category that came back with findings, in report order. A
+   clean category has nothing to act on, so it only gets its name in the line
+   under the cards. Starting a run clears the lot: the record is reseeded with
+   every category waiting, and the starting window covers the seconds before
+   that lands. Each card's copy key puts that category's block on the
+   clipboard, findings and notes as the report writes them.
+
+   Each finding's x key hides it for the rest of the pass — reviewed, no
+   action wanted. The service takes those findings out before the page ever
+   sees them, so what stays is what the card draws; the header line counts
+   what went, and the restore key brings it all back. The next run
+   restores everything on its own. */
+
+let renderedAudit = null;
+
+const auditSnapshot = () => JSON.stringify(
+  [DATA.hermes_audit.run && DATA.hermes_audit.run.categories,
+   DATA.hermes_audit.error, auditStarting()]);
+
+/* the report's own wording for one category, for pasting elsewhere */
+function auditText(c, n) {
+  /* what is dismissed is off this block but still in the report the last line
+     points at, so the count says so rather than disagreeing with it */
+  const hid = c.dismissed ? ` (${c.dismissed} more dismissed here, in the`
+                            + " report)" : "";
+  const head = c.findings.length
+    ? `${n}. ${c.label}: warn — ${c.findings.length} finding`
+      + (c.findings.length === 1 ? "" : "s") + hid
+    : `${n}. ${c.label}: ok${hid}`;
+  return [head, ...c.findings.map((f) => `   - ${f}`),
+          ...c.notes.map((t) => `   * ${t}`),
+          "full report: ~/Iris/hermes-audit-report.md"].join("\n") + "\n";
+}
+
+/* the old selection copy: the tailnet http address is not a secure context, so
+   navigator.clipboard does not exist there, and Safari refuses the modern call
+   in cases the phone bookmark hits — this is what copies in both */
+function selectionCopy(text) {
+  const ta = el("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.append(ta);
+  ta.select();
+  const ok = document.execCommand("copy");
+  ta.remove();
+  return ok;
+}
+
+async function copyText(text, key) {
+  let ok = false;
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch { /* refused — the selection copy below is the fallback */ }
+  }
+  if (!ok && !selectionCopy(text)) {
+    alert("could not copy");
+    return;
+  }
+  key.replaceChildren(icon("copy"), "copied");
+  setTimeout(() => key.replaceChildren(icon("copy"), "copy"), 1500);
+}
+
+function copyKey(text, title) {
+  const key = el("button", "key");
+  key.append(icon("copy"), "copy");
+  key.title = title;
+  key.addEventListener("click", () => copyText(text, key));
+  return key;
+}
+
+/* the stderr of a run that ended without writing a report — a stopped run
+   leaves none, a crashed one leaves the traceback, and a start that never
+   reached audit.py leaves whatever uv said */
+function auditErrorEl(text, started) {
+  const p = el("section", "panel card aud");
+  const head = el("div", "p-head");
+  head.append(el("span", "t", started ? "no report from the last run"
+                                      : "last run could not start"),
+              el("span", "fill"),
+              copyKey(text + "\n", "copy the run's error output"));
+  p.append(head);
+  const body = el("div", "c-body");
+  body.append(el("div", "aud-find", text));
+  p.append(body);
+  return p;
+}
+
+/* one finding plus its dismiss key: reviewed, no action wanted, off the page
+   until the next pass reseeds the record. Same amber x chip the inbox rows
+   deny with, and the same two-tap arming — the finding text is unique inside
+   its category, so the armed state survives a re-render */
+function auditFindEl(c, f) {
+  const row = el("div", "aud-find");
+  row.append(el("span", "b-text", f));
+  const non = el("button", "sq non");
+  non.append(icon("x"));
+  non.setAttribute("aria-label", "dismiss this finding");
+  non.title = "hide this finding until the next run";
+  armedButton(non, `aud/${c.label}/${f}`, () =>
+    post("/api/hermes-audit/dismiss", { category: c.label, finding: f }));
+  const sqs = el("div", "sqs");
+  sqs.append(non);
+  row.append(sqs);
+  return row;
+}
+
+function auditCardEl(c, n) {
+  const p = el("section", "panel card aud");
+  const head = el("div", "p-head");
+  head.append(el("span", "t", `${n}. ${c.label}`), el("span", "fill"),
+    el("span", "m", `${c.findings.length} finding`
+      + (c.findings.length === 1 ? "" : "s")),
+    copyKey(auditText(c, n), "copy this category's findings"));
+  p.append(head);
+  const body = el("div", "c-body");
+  for (const f of c.findings) body.append(auditFindEl(c, f));
+  for (const t of c.notes) body.append(el("div", "aud-note", t));
+  p.append(body);
+  return p;
+}
+
+function renderAudit() {
+  if (!DATA) return;
+  renderedAudit = auditSnapshot();
+  const host = $("#cards-audit");
+  const clean = $("#aud-clean");
+  host.replaceChildren();
+  clean.textContent = "";
+  clean.removeAttribute("title");
+  $("#aud-restore").disabled = !armedButtonBusy("audit-restore");
+  const run = DATA.hermes_audit.run;
+  /* between the tap and the child taking the lock the record still holds the
+     previous pass, and those cards are answered for */
+  if (auditStarting()) return;
+  if (DATA.hermes_audit.error)
+    host.append(auditErrorEl(DATA.hermes_audit.error,
+                             !!run && !run.finished_at));
+  if (!run) return;
+  const cats = run.categories || [];
+  /* a card whose findings are all dismissed leaves the page; the line below
+     is where it is still named, so a warn category never vanishes silently */
+  cats.forEach((c, i) => {
+    if (c.state === "warn" && c.findings.length) host.append(auditCardEl(c, i + 1));
+  });
+  /* a card whose findings are all dismissed leaves the page, and a category
+     with no findings never had one — the heading counts both, and names them
+     in its tooltip. The restore key is what undoes a dismissal. */
+  const ok = cats.filter((c) => c.state === "ok").map((c) => c.label);
+  const hid = cats.filter((c) => c.dismissed);
+  const dismissed = hid.reduce((n, c) => n + c.dismissed, 0);
+  $("#aud-restore").disabled = !dismissed || armedButtonBusy("audit-restore");
+  const bits = [];
+  if (ok.length) bits.push(`${ok.length} clean`);
+  if (dismissed) bits.push(`${dismissed} dismissed`);
+  if (!bits.length) return;
+  clean.textContent = ", " + bits.join(", ");
+  const tip = [];
+  if (ok.length)
+    tip.push((run.finished_at ? "no findings: " : "no findings so far: ")
+      + ok.join(", "));
+  if (dismissed)
+    tip.push("dismissed: "
+      + hid.map((c) => `${c.dismissed} in ${c.label}`).join(", "));
+  clean.title = tip.join("\n");
+}
+
+/* the rows whose green check key would fire right now: pending, a category
+   picked or suggested, the payee-rule choice made — the submit-all key
+   sends exactly these. Visible cards only: a hidden duplicate would put
+   the same transaction_id in the items twice, which apply refuses whole */
+function finValidItems() {
+  if (!DATA) return [];
+  const out = [];
+  for (const c of finVisibleCards()) {
+    if (c.status !== "pending") continue;
+    const id = c.transaction_id;
+    const best = c.suggestions && c.suggestions.length ? c.suggestions[0] : null;
+    const cat = qualify(finPicks.get(id) || (best && best.category) || null);
+    if (!cat || !finRule.has(id)) continue;
+    out.push({ transaction_id: id, category: cat,
+               update_rule: finRule.get(id) === true,
+               approx: finRule.get(id) === true && finApprox.get(id) === true });
+  }
+  return out;
+}
+
+/* the submit-all key: enabled only while at least one row is valid and no
+   row is working. The apply call returns 202 as soon as the job is
+   claimed, so armed-button's own in-flight look ends seconds before the
+   rows settle — the key carries the busy chip for as long as a row works,
+   which is why the class is set here and not left to armed-button. Runs on
+   every poll (renderMeta) and every finance rebuild. */
+function syncSubmitAll() {
+  const b = $("#fin-submit-all");
+  const n = finValidItems().length;
+  const busy = armedButtonBusy("fin-submit-all") || finWorking();
+  b.disabled = busy || !n;
+  b.classList.toggle("inflight", busy);
+  b.title = busy ? "a write is running"
+          : n ? `submit ${n} row${n === 1 ? "" : "s"} in one write`
+              : "no row is ready — each needs a category and a payee-rule choice";
+}
+
+async function finApply(items) {
+  /* one call for one row's check key or the submit-all key. A poll replaces
+     DATA wholesale, so resolve every item against the live cards — a row
+     pruned since the render is dropped here */
+  const prev = new Map();
+  const live = [];
+  for (const it of items) {
+    const c = DATA.finance.cards.find(
+      (x) => x.transaction_id === it.transaction_id);
+    if (!c || c.status !== "pending") continue;
+    prev.set(c.transaction_id, { status: c.status, status_text: c.status_text });
+    live.push(c);
+  }
+  if (!live.length) { poll(); return; }
+  /* the keys leave the rows at the firing tap: the green [in progress]
+     shows the call is on its way even when the response takes a while; a
+     refused call puts the rows' real status back */
+  for (const c of live) {
+    c.status = "in_progress";
+    c.status_text = "working";
+  }
+  renderFinance();
+  try {
+    const res = await fetch("/api/finance/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Actions-Local": "1" },
+      body: JSON.stringify({
+        items: items.filter((it) => prev.has(it.transaction_id)) }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 202) {
+      for (const c of live) {
+        const id = c.transaction_id;
+        finPicks.delete(id);
+        finRule.delete(id);
+        finApprox.delete(id);
+        finOpen.delete(id);
+        finCreating.delete(id);
+        finDraft.delete(id);
+      }
+      pacePoll();
+      return;
+    }
+    for (const c of live) Object.assign(c, prev.get(c.transaction_id));
+    if (body.error) alert(body.error);
+    renderFinance();
+    if (res.status === 409) poll();  /* stale view: refetch */
+  } catch {
+    for (const c of live) Object.assign(c, prev.get(c.transaction_id));
+    renderFinance();
+    failed = true;
+    tick();
+  }
+}
+
+/* the create-category call: the accept key stays in flight until the write
+   settles. On success the new category enters the local picker data
+   and is picked — the api-cache copy is fresh after the write, so the next
+   poll confirms it from the server */
+async function finCreateCategory(c, group, name) {
+  const id = c.transaction_id;
+  try {
+    const res = await fetch("/api/finance/create-category", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Actions-Local": "1" },
+      body: JSON.stringify({ name, group }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(body.error || `create failed (${res.status})`);
+      return;
+    }
+    finLastGroup = group;
+    finCreating.delete(id);
+    finDraft.delete(id);
+    const g = DATA.finance.categories.find((x) => x.group === group);
+    if (g) g.categories.push(name);
+    else DATA.finance.categories.push({ group, categories: [name] });
+    finPicks.set(id, body.category);
+    renderFinance();
+    poll();
+  } catch {
+    failed = true;
+    tick();
+  }
+}
+
+async function startFinScan() {
+  /* the key greys and the line says "starting scan…" at the firing tap —
+     also against a poll re-enabling the key mid-request; a refused call
+     puts both back */
+  finScanStartingAt = Date.now();
+  finJobLine();
+  if (await post("/api/finance/uncategorized", {})) {
+    setTimeout(poll, 2000);
+  } else {
+    finScanStartingAt = 0;
+    finJobLine();
+  }
+}
+
+/* the messages rescan key: same tap feedback as the finance one — grey and
+   "starting scan…" until a poll sees the run in hermes' ledger */
+async function startMsgScan() {
+  msgScanStartingAt = Date.now();
+  msgJobLine();
+  if (await post("/api/messages/scan-request", {})) {
+    setTimeout(poll, 2000);
+  } else {
+    msgScanStartingAt = 0;
+    msgJobLine();
+  }
+}
+
+
+/* ---- actions ------------------------------------------------------------- */
+
+async function decide(s, r, decision) {
+  /* a poll replaces DATA wholesale, so s and r may be detached render-time
+     copies — mutate the live objects, or the row keeps reading pending and
+     its keys come back enabled */
+  const live = DATA.emails.sets.find((x) => x.id === s.id);
+  const row = live && live.rows.find((x) => x.id === r.id);
+  if (!row) { poll(); return; }
+  /* the keys leave the row at the firing tap: the green [in progress] shows
+     the call is on its way even when the response takes a while; a refused
+     call puts the row's real status back */
+  const prev = { status: row.status, status_text: row.status_text };
+  row.status = "in_progress";
+  row.status_text = "working";
+  renderEmails();
+  try {
+    const res = await fetch("/api/emails/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Actions-Local": "1" },
+      body: JSON.stringify({ set_id: live.id, row_id: row.id, decision,
+                             args_sha256: row.args_sha256 }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 202) {
+      pacePoll();
+      return;
+    }
+    Object.assign(row, body.row || prev);
+    renderEmails();
+    if (res.status === 409) poll();  /* stale view: row re-rendered, now refetch */
+  } catch {
+    Object.assign(row, prev);
+    renderEmails();
+    failed = true;
+    tick();
+  }
+}
+
+/* "retry": void the stuck set, so its emails leave the ledger. They come
+   back as proposals on the next scan and not before — a scan only ever
+   offers emails the ledger does not hold — so the heading says to run one */
+async function retrySet(s) {
+  if (await post("/api/emails/reset", { set_id: s.id })) {
+    retriedAt = Date.now();
+    jobLine();
+  }
+}
+
+/* "skip all": deny every pending row of the set, one call at a time. Each
+   decide() rebuilds the cards; armedButton's registry keeps the rebuilt key
+   disabled and pulsing until this whole loop settles */
+async function skipAll(s) {
+  for (const r of s.rows) {
+    if (r.status !== "pending") continue;
+    await decide(s, r, "deny");
+  }
+  poll();
+}
+
+async function post(path, body) {
+  let ok = false;
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Actions-Local": "1" },
+      body: JSON.stringify(body),
+    });
+    ok = res.ok;
+    if (!ok) {
+      /* a refused call (e.g. 409 in-progress on reset) must not read as
+         success */
+      const out = await res.json().catch(() => ({}));
+      alert(out.error || `${path} failed (${res.status})`);
+    }
+  } catch {
+    failed = true;
+    tick();
+    return false;
+  }
+  poll();
+  return ok;
+}
+
+async function startScan() {
+  /* the claim row lands in hermes' ledger moments after the spawn; one
+     early poll shows "scanning" without waiting out the minute, and the
+     placeholder covers the gap until then. The stamp is set at the firing
+     tap — the key greys and the line says "starting scan…" right away, and
+     a poll landing mid-request cannot re-enable the key; a refused call
+     puts both back */
+  scanStartingAt = Date.now();
+  jobLine();
+  if (await post("/api/emails/rescan", {})) {
+    setTimeout(poll, 2000);
+  } else {
+    scanStartingAt = 0;
+    jobLine();
+  }
+}
+armedButton($("#rescan"), "rescan-emails", startScan);
+/* both keys re-derive their own state from the data that landed: the poll
+   inside the call is not awaited, so armed-button's re-enable would
+   otherwise leave a key bright on an empty area */
+armedButton($("#emails-hide"), "emails-hide-finished",
+  () => post("/api/emails/hide", { all: true })
+    .finally(() => setTimeout(renderMeta)));
+armedButton($("#fin-hide"), "fin-hide-finished",
+  () => post("/api/finance/hide", { all: true })
+    .finally(() => setTimeout(renderMeta)));
+armedButton($("#msg-hide"), "messages-hide-finished",
+  () => post("/api/messages/hide", { all: true })
+    .finally(() => setTimeout(renderMeta)));
+armedButton($("#msg-skip"), "messages-skip-all",
+  () => msgSkipAll().finally(() => setTimeout(renderMeta)));
+armedButton($("#fin-rescan"), "rescan-finance", startFinScan);
+armedButton($("#rep-build"), "preview-finance-report", startReport);
+/* a part key only switches the panel to that part's cached text — the
+   render is local, so no poll is waited on */
+for (const b of REP_KEYS) {
+  b.title = "show this part's last build — the create-preview key rebuilds the picked part";
+  b.addEventListener("click", () => {
+    repPicked = b.dataset.part;
+    if (DATA) {
+      renderReport();
+      repLine();
+    }
+  });
+}
+armedButton($("#msg-rescan"), "rescan-messages", startMsgScan);
+armedButton($("#msg-reset"), "msg-reset",
+  () => post("/api/messages/reset", {})
+    .then((ok) => ok && new Promise((r) => setTimeout(r, 5000))));
+/* the items are gathered at the confirming tap, so picks made between arm
+   and confirm count. armed-button re-enables the key when the request
+   settles; the timeout re-derives the key's state after that, because the
+   rows keep working past the 202. */
+armedButton($("#fin-submit-all"), "fin-submit-all",
+  () => finApply(finValidItems()).finally(
+    () => setTimeout(syncSubmitAll)));
+/* both keys restart a launchd agent that loads the tool-approvals plugin at
+   start; nothing on this page changes, so neither re-derives any state */
+armedButton($("#sys-gateway"), "system-restart-gateway",
+  () => post("/api/system/restart-gateway", {}));
+armedButton($("#sys-webui"), "system-restart-webui",
+  () => post("/api/system/restart-webui", {}));
+/* the audit's own starting window: uv plus the script's own start-up sit
+   between the tap and the lock, and until it is held the state still reads
+   "not running". The stamp greys the keys and clears the previous pass's
+   cards at the tap; a refused call puts both back. */
+async function startAudit() {
+  auditStartingAt = Date.now();
+  auditPaint();
+  if (await post("/api/hermes-audit/run", {})) {
+    setTimeout(poll, 2000);
+  } else {
+    auditStartingAt = 0;
+    auditPaint();
+  }
+}
+/* a reset that lands stamps the moment so the header line can read "reset
+   successful"; a refused call (409 while a run holds the lock) shows nothing */
+async function resetAudit() {
+  if (await post("/api/hermes-audit/reset", {})) {
+    auditResetAt = Date.now();
+    auditPaint();
+  }
+}
+function auditPaint() {
+  if (DATA) renderMeta();
+  renderAudit();
+}
+/* armed-button re-enables a key when its request settles, so each key
+   re-derives all three from the state that landed — otherwise the run key
+   flashes back on while the run holds the lock */
+const auditKey = (call) => () => call().finally(() => setTimeout(auditPaint));
+armedButton($("#aud-run"), "audit-run", auditKey(startAudit));
+armedButton($("#aud-stop"), "audit-stop",
+  auditKey(() => post("/api/hermes-audit/stop", {})));
+armedButton($("#aud-reset"), "audit-reset", auditKey(resetAudit));
+armedButton($("#aud-restore"), "audit-restore",
+  auditKey(() => post("/api/hermes-audit/restore", {})));
+/* success holds the reset key in flight 5 s so the tap visibly landed */
+armedButton($("#reset-all"), "reset-reviewed",
+  () => post("/api/emails/reset", { all: true })
+    .then((ok) => ok && new Promise((r) => setTimeout(r, 5000))));
+poll();
+setInterval(poll, 60000);
+/* the age text moves between polls, so a stalled service still reads as a
+   growing amber age rather than a frozen one */
+setInterval(tick, 10000);
+</script>
+</body>
+</html>

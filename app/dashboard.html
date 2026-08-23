@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Dashboard">
+<title>Iris — Dashboard</title>
+<link rel="icon" href="apple-touch-icon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<!-- Iris dashboard page.
+     Live: every value comes from GET /api/snapshot, served with this page by
+     server.py. The page refetches every 60 seconds; the "updated" stamp counts
+     from the last successful fetch and turns amber when a fetch fails.
+     Two layers, same shape as the actions page. The host stats ride one
+     permanent line under the bar. Under it the glance layer: narrow area
+     tiles — icon, a count of issues or activity, one shorthand status line,
+     amber when something is wrong — plus an "all" tile holding the issue
+     total. A tile picks the view: "all" stacks every area (the default), an
+     area tile shows that area alone; the choice sticks in localStorage per
+     device. A strip of icon+count chips pins under the bar while the tiles
+     are scrolled out of view.
+     The work layer is seven areas under slim header rows: services, jobs,
+     mcp, models, tools (last calls + the catalogue), sessions (by model +
+     by surface), links. -->
+<link rel="stylesheet" href="tap-feedback.css">
+<style>
+/* Sans-serif labels and headings with monospace kept for identifiers and
+   numbers; card panels with a soft shadow on a darker page. Palette: the
+   Minimal theme's Ayu scheme (github.com/kepano/obsidian-minimal,
+   src/scss/color-schemes/ayu.scss), page darkened one step behind the
+   cards. Secondary columns sit in the faint tier; week-unused tools go
+   faint. */
+
+:root {
+  color-scheme: light;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Minimal Ayu light; ink and green darkened a step for small-text
+     legibility, page darkened a step behind the white cards */
+  --bg: #f2f4f5; --panel: #ffffff; --band: #f2f5f6; --fill2: #e6ebee;
+  --ink: #43474a; --sub: #8a9199; --faint: #aaaeb0;
+  --hair: #edf0f2; --rule: #e6eaed; --track: #d9dfe4; --seg: #7d8794;
+  --amber: #b97434; --green: #6b9a51; --tool: #557f9e;
+  --brand: #ff9a00;
+  --s1: #7aa159; --s2: #9784b6; --s3: #6690b3;
+  --q1: #8a93a0; --q1i: #33383e; --q2: #a3abb6; --q2i: #383d43;
+  --q3: #bcc2cb; --q3i: #43474a; --q4: #d2d6dc; --q4i: #4a4f54;
+  --q5: #e4e7eb; --q5i: #5a6065;
+  --bar: #292f3c; --bar-ink: #e7eaee; --bar-sub: #9aa4b5;
+  --bar-rule: #3b4454; --bar-fill: #333b48; --bar-edge: #20252f;
+  --card-edge: var(--rule); --card-shadow: 0 1px 3px rgba(16,24,40,.06);
+  --bar-max: 1240px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    /* Minimal Ayu dark (Mirage family) hues, surfaces lifted a step toward
+       Nord's polar night — Mirage alone read too dark, Nord too bright */
+    --bg: #20252f; --panel: #292f3c; --band: #323949; --fill2: #3b4454;
+    --ink: #cccac2; --sub: #7a8496; --faint: #5e6879;
+    --hair: #323948; --rule: #3b4454; --track: #4a5669; --seg: #b6c0cf;
+    --amber: #cf9967; --green: #82a865; --tool: #8ab4cf;
+    --brand: #ff9a00;
+    --s1: #85a171; --s2: #a293bd; --s3: #7195b5;
+    --q1: #8a94a6; --q1i: #1e2431; --q2: #737d8f; --q2i: #171c26;
+    --q3: #5d6779; --q3i: #dfe3ea; --q4: #4a5263; --q4i: #d5dae2;
+    --q5: #3a4150; --q5i: #b9c0cb;
+    --bar: #171b23; --bar-ink: #cccac2; --bar-sub: #7a8496;
+    --bar-rule: #2b323e; --bar-fill: #262c37; --bar-edge: #101318;
+    --card-edge: #191d27; --card-shadow: 0 1px 3px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #20252f; --panel: #292f3c; --band: #323949; --fill2: #3b4454;
+  --ink: #cccac2; --sub: #7a8496; --faint: #5e6879;
+  --hair: #323948; --rule: #3b4454; --track: #4a5669; --seg: #b6c0cf;
+  --amber: #cf9967; --green: #82a865; --tool: #8ab4cf;
+  --brand: #ff9a00;
+  --s1: #85a171; --s2: #a293bd; --s3: #7195b5;
+  --q1: #8a94a6; --q1i: #1e2431; --q2: #737d8f; --q2i: #171c26;
+  --q3: #5d6779; --q3i: #dfe3ea; --q4: #4a5263; --q4i: #d5dae2;
+  --q5: #3a4150; --q5i: #b9c0cb;
+  --bar: #171b23; --bar-ink: #cccac2; --bar-sub: #7a8496;
+    --bar-rule: #2b323e; --bar-fill: #262c37; --bar-edge: #101318;
+  --card-edge: #191d27; --card-shadow: 0 1px 3px rgba(0,0,0,.3);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 14.5px; line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  background: var(--bg); color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  /* iOS otherwise auto-inflates text in wide blocks (models, links list)
+     when the phone rotates to landscape */
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+}
+/* identifiers and numbers stay monospace inside the sans page */
+.st, .nm, .tn, .tc, .fam-n, .dim, .faint, .recp, .linkrow a {
+  font-family: var(--mono); font-size: 13px;
+}
+.svg-icon { width: 13px; height: 13px; stroke: currentColor; fill: none;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* toolbar: shared component — markup, styles and behavior come from bar.js
+   (shared with the actions page); --bar-max sets its content width */
+
+/* dev design tiles: shared component — markup, styles and behavior come
+   from dev-bar.js (shared with the actions page) */
+
+/* ---- panels: cards ------------------------------------------------------ */
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 1.25rem 1rem 2.5rem; }
+/* until the first snapshot lands, the pane shows only the wordmark */
+.boot { display: grid; place-items: center; padding: 22vh 0; }
+.boot .mark { font-size: 40px; font-weight: 700; letter-spacing: 0.02em; }
+.boot .mark b { color: var(--brand); font-weight: 400; }
+#pane-dash.loading > :not(.boot) { display: none; }
+#pane-dash:not(.loading) .boot { display: none; }
+.panel { border: 1px solid var(--card-edge); border-radius: 10px; overflow: hidden;
+  background: var(--panel); box-shadow: var(--card-shadow); margin-bottom: 16px; }
+.panel > :first-child { padding-top: 8px; }
+
+/* ---- the glance layer: narrow area tiles --------------------------------
+   Same component as the actions page: 2-3 per row on a phone, the last row
+   may wrap. Count = issues (services, jobs, mcp) or the day's activity
+   (tools, sessions); shorthand status under it, amber when wrong.
+   The "all" tile holds the issue total and stacks every area. */
+
+.tiles { display: grid; gap: 8px; margin: 12px 0 22px;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+.atile { font-family: var(--sans); font-size: inherit; text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--card-edge); border-radius: 10px;
+  background: var(--panel); box-shadow: var(--card-shadow);
+  padding: 8px 11px 6px; color: var(--ink);
+  display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.atile .trow { display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 650; min-width: 0; }
+.atile .trow .svg-icon { width: 14px; height: 14px; stroke-width: 2.2;
+  color: var(--ac); flex: none; }
+.atile .trow .nm2 { overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.atile .tcount { font-family: var(--mono); font-size: 21px; font-weight: 700;
+  line-height: 1.35; }
+.atile .tcount.zero { color: var(--faint); font-weight: 400; }
+.atile .tstat { color: var(--sub); font-size: 10.5px; line-height: 1.5;
+  letter-spacing: 0.02em; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; min-height: 16px; }
+.atile .tstat .bad { color: var(--amber); }
+.atile .tstat .wrk { color: var(--tool); }
+.atile.sel { border: 2px solid var(--ac); padding: 7px 10px 5px; }
+.atile.all { --ac: var(--tool); }
+.atile.services { --ac: var(--green); }
+.atile.jobs { --ac: var(--s1); }
+.atile.mcp { --ac: var(--s2); }
+.atile.models { --ac: var(--brand); }
+.atile.tools { --ac: var(--s3); }
+.atile.sessions { --ac: var(--seg); }
+.atile.links { --ac: var(--sub); }
+
+/* the strip: icon+count chips pinned under the bar while the tile grid is
+   scrolled out of view, so switching views never needs a scroll back up */
+.strip { position: fixed; top: var(--bar-h, 48px); left: 0; right: 0;
+  z-index: 35; display: flex; justify-content: center; gap: 6px;
+  padding: 7px 1rem; overflow-x: auto;
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--rule);
+  transform: translateY(-110%); transition: transform .18s; }
+.strip.show { transform: none; }
+.schip { font-family: var(--sans); font-size: 12px; font-weight: 650;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  flex: none; min-height: 28px; padding: 2px 11px; border-radius: 14px;
+  border: 1px solid var(--rule); background: var(--panel);
+  color: var(--sub); }
+.schip .svg-icon { width: 13px; height: 13px; stroke-width: 2.2;
+  color: var(--ac); }
+.schip .n { font-family: var(--mono); font-weight: 700; }
+.schip .warndot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--amber); }
+.schip.on { border-color: var(--ac); color: var(--ink); }
+.schip.all { --ac: var(--tool); }
+.schip.services { --ac: var(--green); }
+.schip.jobs { --ac: var(--s1); }
+.schip.mcp { --ac: var(--s2); }
+.schip.models { --ac: var(--brand); }
+.schip.tools { --ac: var(--s3); }
+.schip.sessions { --ac: var(--seg); }
+.schip.links { --ac: var(--sub); }
+
+/* ---- area headers: slim rows (the strip orients) ------------------------ */
+
+.area { margin-bottom: 28px;
+  scroll-margin-top: calc(var(--bar-h, 48px) + 46px); }
+.area.off { display: none; }
+.area-top { display: flex; align-items: baseline; flex-wrap: wrap;
+  gap: 8px 12px; margin: 0 2px 12px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule); }
+.area-h { margin: 0; font-size: 13.5px; font-weight: 650;
+  letter-spacing: 0; }
+.a-ic { display: grid; place-items: center; align-self: center; flex: none; }
+.a-ic .svg-icon { width: 14px; height: 14px; stroke-width: 2.2; }
+.a-ic.services { color: var(--green); }
+.a-ic.jobs { color: var(--s1); }
+.a-ic.mcp { color: var(--s2); }
+.a-ic.models { color: var(--brand); }
+.a-ic.tools { color: var(--s3); }
+.a-ic.sessions { color: var(--seg); }
+.a-ic.links { color: var(--sub); }
+.area-top .fill { flex: 1; }
+.area-top .m { color: var(--faint); font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; }
+/* sub-labels inside an area (last calls / catalogue, by model / by surface) */
+.sub-label { color: var(--sub); font-size: 11px; font-weight: 650;
+  letter-spacing: 0.09em; text-transform: uppercase; margin: 0 0 8px 4px; }
+.panel + .sub-label { margin-top: 12px; }
+
+.st { font-weight: 700; }
+.st.ok { color: var(--green); }
+.st.idl { color: var(--faint); }
+.st.bad { color: var(--amber); }
+
+/* ---- host row ---------------------------------------------------------- */
+
+/* one compact permanent line above the tiles, wrapping on the phone */
+.hostrow { display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 4px 22px; margin: 2px 2px 0; min-width: 0; }
+.stat { display: flex; align-items: baseline; gap: 1ch; min-width: 0; }
+.stat .l { color: var(--sub); font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; white-space: nowrap; }
+.stat .v { font-family: var(--mono); font-size: 13px; font-weight: 700;
+  white-space: nowrap; }
+.stat .d { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.seg { display: flex; gap: 1px; width: 64px; align-self: center; }
+
+/* ---- models ------------------------------------------------------------- */
+
+#models { display: grid; column-gap: 2.4ch;
+  grid-template-columns: max-content minmax(0,1fr) max-content repeat(2, max-content); }
+.modelrow {
+  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  gap: 2.4ch; align-items: baseline; padding: 6px 18px;
+}
+.modelrow:hover { background: var(--band); }
+.mrole { color: var(--sub); white-space: nowrap; }
+/* runs outside the grid: a spanning item this long would inflate the
+   content-sized tracks and push the table past the screen's width */
+.othermodels { padding: 2px 18px 14px; color: var(--sub);
+  font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.seg i { flex: 1 1 0; height: 8px; background: var(--track); display: block; }
+.seg i.on { background: var(--seg); }
+
+/* ---- services and jobs -------------------------------------------------- */
+
+/* the container owns the tracks and rows subgrid onto them, so columns size
+   to their widest content on any screen; only the flexible column truncates */
+#svcs, #jobs { display: grid; column-gap: 1.2ch; }
+#svcs { grid-template-columns: max-content minmax(0,1fr) repeat(3, max-content); }
+/* jobs carry the extra run-key column, so their gutters are tighter and the
+   column headers less tracked-out to keep full names visible three panels
+   across */
+#jobs { grid-template-columns: max-content minmax(0,1fr) repeat(4, max-content);
+        column-gap: 1ch; }
+#jobs .colhead { letter-spacing: 0.04em; }
+/* the frequency split's group labels span the full row */
+.jobgroup { grid-column: 1 / -1; padding: 8px 18px 2px;
+  color: var(--faint); font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; }
+.svcrow, .jobrow {
+  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  gap: 1.2ch; align-items: baseline; padding: 6px 18px;
+}
+.jobrow { gap: 1ch; align-items: center; }
+.svcrow:hover, .jobrow:hover { background: var(--band); }
+/* a bad service's detail runs long, so it leaves the uptime column as a short
+   marker and takes a full-width line of its own that wraps, instead of
+   stretching the max-content track past the screen */
+.svcrow .err { grid-column: 1 / -1; white-space: normal;
+  overflow-wrap: anywhere; color: var(--amber); }
+
+#mcp { display: grid; column-gap: 1.2ch;
+       grid-template-columns: max-content minmax(0,1fr) repeat(2, max-content); }
+.mcprow {
+  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  gap: 1.2ch; align-items: baseline; padding: 6px 18px;
+}
+.mcprow:hover { background: var(--band); }
+.colhead {
+  color: var(--faint); letter-spacing: 0.08em; text-transform: uppercase;
+  border-bottom: 1px solid var(--hair); padding-top: 6px; padding-bottom: 6px;
+}
+.colhead > * { font-size: 11px; font-family: inherit; }
+.colhead:hover { background: none; }
+.nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* schedule detail the interval and time don't carry (a weekly job's
+   weekday), trailing the job name in smaller faint sans */
+.jnote { font-family: var(--sans); font-weight: 400; font-size: 12px;
+  color: var(--faint); margin-left: 0.8ch; }
+.dim { color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the faint tier: present but out of the way (ports, tailnet, uptime,
+   schedules, model sizes) */
+.faint { color: var(--faint); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.r { text-align: right; white-space: nowrap; }
+.pad { padding-bottom: 10px; }
+
+/* ---- job run keys: one flat play key per job row ------------------------ */
+
+.rowrun {
+  font: inherit; cursor: pointer;
+  display: grid; place-items: center; padding: 4px 9px;
+  border-radius: 6px;
+  background: none; border: 2px solid var(--rule);
+  color: var(--sub);
+}
+.rowrun .svg-icon { width: 12px; height: 12px; }
+.rowrun:hover { background: var(--fill2); color: var(--ink); }
+.rowrun:disabled { opacity: .5; cursor: default; border-color: transparent; }
+/* two-tap feedback: same states as the .sq/.key rules in the shared
+   tap-feedback.css — gray pulsing ring while armed (normal look
+   otherwise), steady blue fill while the request is in flight */
+.rowrun { transition: transform .08s, color .15s,
+  background-color .15s, border-color .15s; }
+.rowrun:enabled:active { transform: scale(.92); }
+.rowrun.armed { animation: arm-burst 1.6s ease-out infinite; }
+.rowrun.inflight { color: var(--faint);
+  background: color-mix(in srgb, var(--tool) 10%, var(--bg));
+  animation: hold-pulse-row 1.1s ease-in-out infinite alternate; }
+.rowrun.inflight:disabled { opacity: 1; cursor: default; }
+/* the key's own 2px border plus a 1px inner line breathe together, so the
+   blue reads as a heavier version of the .sq/.key in-flight pulse */
+@keyframes hold-pulse-row {
+  from { border-color: var(--tool); box-shadow: inset 0 0 0 1px var(--tool); }
+  to { border-color: color-mix(in srgb, var(--tool) 30%, var(--bg));
+       box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tool) 30%, var(--bg)); }
+}
+
+/* ---- links reference list ----------------------------------------------- */
+
+/* the rail is narrow, so the address takes its own line under the name */
+#linklist { display: grid; grid-template-columns: minmax(0,1fr); }
+.linkrow {
+  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  row-gap: 0; align-items: baseline; padding: 6px 18px;
+}
+.linkrow.colhead { display: none; }
+.linkrow:hover { background: var(--band); }
+.linkrow a { color: var(--tool); text-decoration: none; white-space: normal;
+  overflow-wrap: anywhere; }
+.linkrow a:hover { text-decoration: underline; }
+
+/* ---- last tool calls: one column, newest first, grouped like the desk
+   display (consecutive repeats collapse into one row with a count) -------- */
+
+.recent2 { display: grid; grid-template-columns: minmax(0,1fr);
+  padding: 6px 0 14px; }
+.recitem { padding: 4px 18px; border-top: 1px solid var(--hair); }
+.recitem:first-child { border-top: 0; }
+.recitem:hover { background: var(--band); }
+.recitem.hasp { cursor: pointer; }
+.recrow { display: grid; grid-template-columns: minmax(0,1fr) max-content;
+  gap: 1.2ch; align-items: baseline; }
+.recrow .mult { color: var(--sub); }
+/* the call's arguments trail the name on one cut-off line; a click opens
+   them in full below the name */
+.rc { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recp { color: var(--faint); font-size: 12.5px; }
+.recitem.open .rc { white-space: normal; }
+.recitem.open .recp { display: block; overflow-wrap: anywhere; }
+
+/* ---- tool catalogue ---------------------------------------------------- */
+
+.catalog { display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 0 28px; padding: 8px 18px 18px; }
+.fam { margin-bottom: 18px; }
+.fam-head {
+  display: grid; grid-template-columns: minmax(0,1fr) 3.5ch 3.5ch 3.5ch; gap: 0.9ch;
+  align-items: center;
+  border-bottom: 1px solid var(--rule);
+  padding: 3px 0 5px;
+}
+.fam-name { font-family: var(--mono); font-size: 13px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fam-n { font-weight: 600; text-align: right; color: var(--sub); }
+.tr { display: grid; grid-template-columns: minmax(0,1fr) 3.5ch 3.5ch 3.5ch; gap: 0.9ch;
+  padding: 3.5px 0; }
+.tr:hover { background: var(--band); }
+.tn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc { text-align: right; }
+.tc.zero { color: var(--faint); }
+/* called within the hour: orange name; within the day: green */
+.tr.hot .tn { color: var(--amber); }
+.tr.day .tn { color: var(--green); }
+/* untouched all week: the whole row recedes */
+.tr.unused { color: var(--faint); }
+.fam-head.unused { opacity: .55; }
+
+/* ---- sessions: share bars ---------------------------------------------- */
+
+.share-label { padding: 10px 18px 0; color: var(--faint);
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+.share { display: flex; height: 18px; gap: 2px; margin: 5px 18px 0; }
+.share > div {
+  height: 100%; display: grid; place-items: center; overflow: hidden;
+  font-size: 11px; font-weight: 700; font-family: var(--mono);
+}
+.share .none { background: var(--fill2); color: var(--faint); font-weight: 400; }
+/* session shades: a neutral ramp, biggest week share brightest; the number
+   on a segment flips between white and ink with the shade */
+.q1 { background: var(--q1); color: var(--q1i); }
+.q2 { background: var(--q2); color: var(--q2i); }
+.q3 { background: var(--q3); color: var(--q3i); }
+.q4 { background: var(--q4); color: var(--q4i); }
+.q5 { background: var(--q5); color: var(--q5i); }
+/* hovering a segment or a name row lights the same slot in bars and rows */
+.share > div.hl { box-shadow: inset 0 0 0 1.5px var(--ink); }
+.sessrow.hl { background: var(--band); }
+.sessrows { margin-top: 8px; }
+.sessrow { display: grid; grid-template-columns: 12px minmax(0,1fr) 3.5ch 3.5ch 3.5ch;
+  gap: 1.2ch; align-items: baseline; padding: 6px 18px; }
+.sessrow:hover { background: var(--band); }
+.sessrow i { width: 9px; height: 9px; border-radius: 2px; align-self: center; }
+/* rows kept out of the share bars: faint, hollow marker, ruled off */
+.sessrow.excl { color: var(--faint); border-top: 1px solid var(--hair); }
+.sessrow.excl i { border: 1px solid var(--faint); }
+
+/* ---- text-size levels -----------------------------------------------------
+   m and l are the handcrafted bigger readings of the page (the bar's A keys
+   set data-text on the root). s needs no rules — the base styles are s. */
+
+html[data-text="m"] body { font-size: 16.5px; }
+html[data-text="m"] :where(.st, .nm, .tn, .tc, .fam-n, .dim, .faint,
+  .linkrow a, .othermodels, .fam-name) { font-size: 15px; }
+html[data-text="m"] .area-h { font-size: 15.5px; }
+html[data-text="m"] .a-ic .svg-icon { width: 16px; height: 16px; }
+html[data-text="m"] .area-top .m, html[data-text="m"] .sub-label { font-size: 12.5px; }
+html[data-text="m"] .atile .trow { font-size: 13.5px; }
+html[data-text="m"] .atile .tcount { font-size: 23px; }
+html[data-text="m"] .atile .tstat { font-size: 12px; }
+html[data-text="m"] .schip { font-size: 13.5px; min-height: 31px; }
+html[data-text="m"] .stat .l { font-size: 12.5px; }
+html[data-text="m"] .stat .v { font-size: 15px; }
+html[data-text="m"] .stat .d { font-size: 14px; }
+html[data-text="m"] .colhead > * { font-size: 12.5px; }
+html[data-text="m"] .recp { font-size: 14px; }
+html[data-text="m"] .jnote { font-size: 14px; }
+html[data-text="m"] .share { height: 20px; }
+html[data-text="m"] .share > div { font-size: 12.5px; }
+html[data-text="m"] .seg i { height: 9px; }
+html[data-text="m"] .sessrow i { width: 10px; height: 10px; }
+html[data-text="m"] .rowrun .svg-icon { width: 14px; height: 14px; }
+
+html[data-text="l"] body { font-size: 18.5px; }
+html[data-text="l"] :where(.st, .nm, .tn, .tc, .fam-n, .dim, .faint,
+  .linkrow a, .othermodels, .fam-name) { font-size: 17px; }
+html[data-text="l"] .area-h { font-size: 17.5px; }
+html[data-text="l"] .a-ic .svg-icon { width: 18px; height: 18px; }
+html[data-text="l"] .area-top .m, html[data-text="l"] .sub-label { font-size: 14px; }
+html[data-text="l"] .atile .trow { font-size: 15px; }
+html[data-text="l"] .atile .tcount { font-size: 25px; }
+html[data-text="l"] .atile .tstat { font-size: 13.5px; }
+html[data-text="l"] .schip { font-size: 15px; min-height: 34px; }
+html[data-text="l"] .stat .l { font-size: 14px; }
+html[data-text="l"] .stat .v { font-size: 17px; }
+html[data-text="l"] .stat .d { font-size: 16px; }
+html[data-text="l"] .colhead > * { font-size: 14px; }
+html[data-text="l"] .recp { font-size: 16px; }
+html[data-text="l"] .jnote { font-size: 16px; }
+html[data-text="l"] .share { height: 22px; }
+html[data-text="l"] .share > div { font-size: 14px; }
+html[data-text="l"] .seg i { height: 10px; }
+html[data-text="l"] .sessrow i { width: 11px; height: 11px; }
+html[data-text="l"] .rowrun .svg-icon { width: 16px; height: 16px; }
+
+@media (max-width: 760px) {
+  /* job run keys: room to spare in one column, so a full finger target */
+  .rowrun { padding: 8px 16px; }
+  /* jobs: the first-run column gives way so names stay whole */
+  #jobs { grid-template-columns: max-content minmax(0,1fr) repeat(3, max-content); }
+  .jobrow > :nth-child(4) { display: none; }
+  .catalog { grid-template-columns: minmax(0,1fr); }
+}
+/* models on a narrow panel (a phone, or a raised text size shrinking the
+   effective width — media and container queries both see the unzoomed
+   viewport): one wrapped flow per row, source/name/size on the first line,
+   labeled roles on the next; five tracks would scroll sideways. The .narrow
+   class is set by a ResizeObserver in the page script */
+.panel[data-key="models"].narrow #models { display: block; }
+.panel[data-key="models"].narrow #models .colhead { display: none; }
+.panel[data-key="models"].narrow .modelrow { display: flex; flex-wrap: wrap;
+  align-items: baseline; column-gap: 1.6ch; row-gap: 2px; }
+.panel[data-key="models"].narrow .modelrow .nm { flex: 1 1 auto; min-width: 0;
+  white-space: normal; overflow-wrap: anywhere; }
+.panel[data-key="models"].narrow .modelrow .mrole { white-space: normal;
+  overflow-wrap: anywhere; }
+/* a row where either profile holds several roles gives each profile its own
+   line: roles stack one per line, so side by side the longer profile's tail
+   would sit under both labels and belong to neither */
+.panel[data-key="models"].narrow .modelrow.multi .mrole { flex: 1 0 100%; }
+.panel[data-key="models"].narrow .modelrow .mrole::before {
+  content: attr(data-p) ": "; color: var(--faint); }
+@media (max-width: 480px) {
+  /* jobs: the every column goes too, so names stay whole on a phone */
+  #jobs { grid-template-columns: max-content minmax(0,1fr) repeat(2, max-content); }
+  .jobrow > :nth-child(3) { display: none; }
+}
+</style>
+</head>
+<body data-bar="dashboard">
+
+<header class="bar"></header>
+
+<div class="strip" id="strip"></div>
+
+<main class="wrap loading" id="pane-dash">
+
+  <div class="boot"><span class="mark"><b>[</b>iris<b>]</b></span></div>
+
+  <!-- host stats: one permanent line above the tiles -->
+  <div class="hostrow" id="hostrow"></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="area" id="area-services">
+    <div class="area-top">
+      <span class="a-ic services"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></span>
+      <h2 class="area-h">services</h2>
+    </div>
+    <section class="panel"><div class="pad" id="svcs"></div></section>
+  </section>
+
+  <section class="area" id="area-jobs">
+    <div class="area-top">
+      <span class="a-ic jobs"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
+      <h2 class="area-h">jobs</h2>
+    </div>
+    <section class="panel"><div class="pad" id="jobs"></div></section>
+  </section>
+
+  <section class="area" id="area-mcp">
+    <div class="area-top">
+      <span class="a-ic mcp"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22v-5"/><path d="M15 8V2"/><path d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z"/><path d="M9 8V2"/></svg></span>
+      <h2 class="area-h">mcp</h2>
+    </div>
+    <section class="panel"><div class="pad" id="mcp"></div></section>
+  </section>
+
+  <section class="area" id="area-models">
+    <div class="area-top">
+      <span class="a-ic models"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></span>
+      <h2 class="area-h">models</h2>
+    </div>
+    <section class="panel" data-key="models">
+      <div class="pad" id="models"></div>
+      <div class="othermodels" id="othermodels" hidden></div>
+    </section>
+  </section>
+
+  <section class="area" id="area-tools">
+    <div class="area-top">
+      <span class="a-ic tools"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/></svg></span>
+      <h2 class="area-h">tools</h2>
+      <span class="fill"></span>
+      <span class="m">hour / day / week</span>
+    </div>
+    <div class="sub-label">last calls</div>
+    <section class="panel"><div class="recent2" id="recent"></div></section>
+    <div class="sub-label">catalogue</div>
+    <section class="panel"><div class="catalog" id="catalog"></div></section>
+  </section>
+
+  <section class="area" id="area-sessions">
+    <div class="area-top">
+      <span class="a-ic sessions"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></svg></span>
+      <h2 class="area-h">sessions</h2>
+      <span class="fill"></span>
+      <span class="m">hour / day / week</span>
+    </div>
+    <div class="sub-label">by model</div>
+    <section class="panel" data-key="sess-model">
+      <div class="share-label">Last hour</div>
+      <div class="share" id="m1"></div>
+      <div class="share-label">Last 24 hours</div>
+      <div class="share" id="m24"></div>
+      <div class="share-label">Last 7 days</div>
+      <div class="share" id="m7"></div>
+      <div class="pad sessrows" id="mrows"></div>
+    </section>
+    <div class="sub-label">by surface</div>
+    <section class="panel" data-key="sess-surface">
+      <div class="share-label">Last hour</div>
+      <div class="share" id="s1"></div>
+      <div class="share-label">Last 24 hours</div>
+      <div class="share" id="s24"></div>
+      <div class="share-label">Last 7 days</div>
+      <div class="share" id="s7"></div>
+      <div class="pad sessrows" id="srows"></div>
+    </section>
+  </section>
+
+  <section class="area" id="area-links">
+    <div class="area-top">
+      <span class="a-ic links"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+      <h2 class="area-h">links</h2>
+    </div>
+    <section class="panel"><div class="pad" id="linklist"></div></section>
+  </section>
+
+</main>
+
+<script src="iris.js"></script>
+<script src="bar.js"></script>
+<script src="dev-bar.js"></script>
+<script src="armed-button.js"></script>
+<script>
+/* the top bar is built and wired by bar.js (shared with the actions page):
+   page tiles, the chevron row, theme key, text-size keys; tick() reports the
+   status text next to the wordmark via barStatus() */
+
+/* ---- glance tiles + view --------------------------------------------------
+   One tile per area plus "all": a count — issues for services, jobs and
+   mcp; the day's calls and sessions for tools and sessions — and one
+   shorthand status line, amber when something is wrong. A tile picks the
+   view: "all" stacks every area, an area tile shows it alone; the choice
+   sticks in localStorage, per device and per origin, like the bar's
+   prefs. The strip mirrors the tiles as icon+count chips pinned under the
+   bar while the grid is scrolled out of view. */
+
+localStorage.removeItem("iris-closed");   /* the old folding UI's store */
+localStorage.removeItem("iris-status-view");   /* the old page name's store */
+const VIEW_KEY = "iris-dashboard-view";
+const AREA_IDS = ["services", "jobs", "mcp", "models", "tools", "sessions",
+                  "links"];
+const TILE_ICONS = { all: "layout-grid", services: "activity", jobs: "clock",
+  mcp: "plug", models: "cpu", tools: "wrench", sessions: "message-square",
+  links: "link" };
+let view = localStorage.getItem(VIEW_KEY);
+if (view !== "all" && !AREA_IDS.includes(view)) view = "all";
+let SNAP = null;
+
+/* per-area tile facts from the latest snapshot: count + shorthand status
+   segments [class, text] — "bad" also marks the tile and chip amber */
+function tileFacts(d) {
+  const badSvc = d.services
+    .filter((s) => s.state !== "ok" && s.state !== "idle").length;
+  const badJob = d.cron.filter((j) => j.state === "bad").length;
+  const badMcp = d.mcpServers.filter((s) => s.state !== "ok").length;
+  const names = new Set();
+  for (const prof of [d.models.iris, d.models.ops])
+    for (const list of Object.values(prof))
+      for (const m of list || []) names.add(m.name);
+  return {
+    services: { count: badSvc, short: [[badSvc ? "bad" : "", "down"]] },
+    jobs: { count: badJob, short: d.cron.some((j) => j.running)
+      ? [["wrk", "running"]] : [[badJob ? "bad" : "", "failed"]] },
+    mcp: { count: badMcp, short: [[badMcp ? "bad" : "", "down"]] },
+    models: { count: names.size, short: [["", "in use"]] },
+    tools: { count: sum(d.tools24h.map((t) => t[2])),
+      short: [["", "today" + (d.recentTools.length
+        ? `, last ${d.recentTools[0].ago}` : "")]] },
+    sessions: { count: sum(d.surfaces24h.map((x) => x.sessions)),
+      short: [["", "today"]] },
+    links: { count: null, short: [] },
+  };
+}
+
+function renderTiles() {
+  if (!SNAP) return;
+  const f = tileFacts(SNAP);
+  const issues = f.services.count + f.jobs.count + f.mcp.count;
+  const tile = (id, count, short) =>
+    `<button class="atile ${id}${view === id ? " sel" : ""}" data-view="${id}">`
+    + `<span class="trow">${icon(TILE_ICONS[id])}<span class="nm2">${id}</span></span>`
+    + `<span class="tcount${count == null ? " zero" : ""}">${count == null ? "—" : count}</span>`
+    + `<span class="tstat">${short.map(([cls, tx]) =>
+        `<span class="${cls}">${tx}</span>`).join("")}</span>`
+    + `</button>`;
+  $("#tiles").innerHTML = tile("all", issues, [["", "issues"]])
+    + AREA_IDS.map((id) => tile(id, f[id].count, f[id].short)).join("");
+  const chip = (id, count, warn) =>
+    `<button class="schip ${id}${view === id ? " on" : ""}" data-view="${id}"`
+    + ` aria-label="${id}">` + icon(TILE_ICONS[id])
+    + (count == null ? "" : `<span class="n">${count}</span>`)
+    + (warn ? `<span class="warndot"></span>` : "") + `</button>`;
+  $("#strip").innerHTML = chip("all", issues, false)
+    + AREA_IDS.map((id) => chip(id, f[id].count,
+        f[id].short.some(([cls]) => cls === "bad"))).join("");
+  $$("#tiles .atile, #strip .schip").forEach((b) =>
+    b.addEventListener("click",
+      () => setView(b.dataset.view, b.classList.contains("schip"))));
+}
+
+function applyView() {
+  for (const id of AREA_IDS)
+    document.getElementById("area-" + id)
+      .classList.toggle("off", view !== "all" && view !== id);
+}
+
+/* scroll: a strip tap lands the picked area's header at the top; a tile
+   tap changes nothing about the scroll (the tiles are already on screen) */
+function setView(id, scroll) {
+  view = id;
+  localStorage.setItem(VIEW_KEY, id);
+  applyView();
+  renderTiles();
+  if (scroll) document.getElementById(
+    "area-" + (id === "all" ? AREA_IDS[0] : id))
+    .scrollIntoView({ block: "start" });
+}
+applyView();
+
+/* the strip shows only while the tile grid is out of view (and never
+   before the first snapshot, while the grid is display:none) */
+new IntersectionObserver(([entry]) =>
+  $("#strip").classList.toggle("show", !entry.isIntersecting && !!SNAP),
+  { rootMargin: "-48px 0px 0px 0px" }).observe($("#tiles"));
+
+/* the models table reflows into a wrapped layout when its five tracks don't
+   fit the panel — a narrow screen, or a bigger text size inflating the
+   tracks — or when the name column gets too thin to identify a model. The
+   check measures the table itself, so it works at any width and size; the
+   narrow class has to come off for the measurement, because a wrapped
+   layout never overflows and the state could never flip back */
+const modelsPanel = $('.panel[data-key="models"]');
+function syncModelsLayout() {
+  modelsPanel.classList.remove("narrow");
+  const g = $("#models");
+  const nameW = g.querySelector(".modelrow:not(.colhead) .nm")
+    ?.getBoundingClientRect().width || 0;
+  modelsPanel.classList.toggle("narrow",
+    g.scrollWidth > g.clientWidth + 1 || nameW < 90);
+}
+new ResizeObserver(syncModelsLayout).observe(modelsPanel);
+document.addEventListener("iris-text-size", syncModelsLayout);
+
+/* ---- action buttons -----------------------------------------------------
+   Job buttons hand the job to `hermes cron run`, wired through armedButton
+   (armed-button.js, shared with the actions page): arm, 5 s confirm window,
+   blue in-flight pulse until the reply; alert on failure. The wiring runs
+   again after every render, and the registry carries armed and in-flight
+   state across the rebuilds. */
+
+/* jobs whose run key stays disabled: name -> start stamp. The claim row
+   lands in hermes' ledger moments after the spawn, so a 30 s window covers
+   the gap until a snapshot reports the job running. */
+const startedJobs = new Map();
+
+async function act(job) {
+  /* claim the window at the firing tap — a refresh landing mid-request
+     rebuilds the row and must not re-enable the key */
+  startedJobs.set(job, Date.now());
+  try {
+    const r = await fetch("/api/job/run?name=" + encodeURIComponent(job),
+                          { method: "POST" });
+    const text = await r.text();
+    if (r.ok && !/^(FAILED|REJECTED)/.test(text)) {
+      refresh();
+      setTimeout(refresh, 3000);   /* one early pass that sees the claim */
+      return;
+    }
+    alert(text || "request failed");
+  } catch {
+    alert("request failed");
+  }
+  startedJobs.delete(job);
+}
+
+/* sessions: hovering a share segment or a name row lights up everything in
+   the same slot — the row and its segments in all three bars. The rows in
+   the pooled tail share one slot, so they light up as a group. */
+$$('[data-key="sess-model"], [data-key="sess-surface"]').forEach((sec) => {
+  let lit = [];
+  const clear = () => { lit.forEach((el) => el.classList.remove("hl")); lit = []; };
+  sec.addEventListener("mouseover", (e) => {
+    const t = e.target.closest("[data-q]");
+    clear();
+    if (!t) return;
+    lit = $$(`[data-q="${t.dataset.q}"]`, sec);
+    lit.forEach((el) => el.classList.add("hl"));
+  });
+  sec.addEventListener("mouseleave", clear);
+});
+
+/* a call's arguments open to their full text on click; the next refresh
+   redraws the list, so an opened row closes on its own */
+$("#recent").addEventListener("click", (e) => {
+  const it = e.target.closest(".recitem.hasp");
+  if (it) it.classList.toggle("open");
+});
+
+/* ---- fetch loop ---------------------------------------------------------
+   The stamp counts from the last successful fetch and turns amber when a fetch
+   fails, so a dead server shows as a growing amber age, not a frozen page. */
+
+let checkedAt = null, failed = false, pageError = "", warn = false;
+
+function ago(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 10) return "now";
+  if (s < 60) return `${Math.round(s / 10) * 10} sec ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hr ago`;
+  const d = Math.round(h / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+function tick() {
+  const el = $("#stamp");
+  el.classList.toggle("bad", failed || !!pageError);
+  el.textContent = checkedAt ? "updated " + ago(Date.now() - checkedAt) : "connecting…";
+  const strip = $("#page-error");
+  strip.textContent = pageError;
+  strip.hidden = !pageError;
+  /* the wordmark's status text: empty until the first snapshot */
+  if (checkedAt)
+    barStatus(failed ? "off" : warn || pageError ? "warn" : "ok");
+}
+
+async function refresh() {
+  let snap;
+  try {
+    const r = await fetch("/api/snapshot");
+    if (!r.ok) throw new Error(r.status);
+    snap = await r.json();
+    checkedAt = Date.now();
+    failed = false;
+  } catch {
+    failed = true;
+    tick();
+    return;
+  }
+  /* a render pass that throws (e.g. the JSON missing a field the page
+     expects) must show as an error, never as a page that looks fine
+     but stays stale */
+  try {
+    render(snap);
+    pageError = "";
+  } catch (e) {
+    pageError = "page error: " + e.message;
+  }
+  tick();
+}
+
+refresh();
+setInterval(refresh, 60000);
+setInterval(tick, 10000);
+
+/* ---- rendering ---------------------------------------------------------- */
+
+/* rows band in threes, everywhere on the page */
+const BAND = 3;
+const banded = (i) => (Math.floor(i / BAND) % 2 ? " band" : "");
+
+const SEGS = 7;
+const seg = (pct) => `<div class="seg">` + Array.from({ length: SEGS }, (_, i) =>
+  `<i class="${i < Math.round(pct / 100 * SEGS) ? "on" : ""}"></i>`).join("") + `</div>`;
+
+const byName = (a, b) => a.name.localeCompare(b.name);
+
+function render(d) {
+  SNAP = d;
+  $("#pane-dash").classList.remove("loading");
+  renderTiles();
+
+  /* ---- host: label with its detail, value, segmented bar ---------------- */
+
+  const h = d.host;
+  $("#hostrow").innerHTML = [
+    ["CPU", "", h.cpu],
+    ["GPU", "", h.gpu],
+    ["RAM", `${Math.round(h.ramGb)} GB`, h.ram],
+    ["SSD", `${h.diskUsedGb} GB`, h.disk],
+  ].map(([l, note, pct]) => `<div class="stat"><span class="l">${l}</span>`
+    + `<span class="v">${pct}%</span>`
+    + (note ? `<span class="d">${note}</span>` : "")
+    + seg(pct) + `</div>`).join("");
+
+  /* ---- models: each provider+model pair once, with the roles every
+     profile gives it; rows sorted by model name and each cell's roles
+     sorted among themselves.
+     Without a provider pin the source is inferred from the size,
+     which is measured from the local oMLX model folders: a sized model is
+     local and the rest come from OpenRouter. A cron job's provider pin can
+     run the same model name on a different source, so pinned rows stay
+     separate. ------------------------------------------------------------- */
+
+  const ROLES = ["main", "vision", "aux", "fallback", "cron", "tests"];
+  const PROFILES = [d.models.iris, d.models.ops];
+  const SOURCES = { omlx: "oMLX", openrouter: "OpenRouter" };
+  /* numeric so 3.5 sorts before 3.6 and 4B before 35B; base so the capital
+     and lowercase qwen names sort together instead of in two groups */
+  const byName = new Intl.Collator(undefined,
+    { sensitivity: "base", numeric: true }).compare;
+  const byModel = new Map();
+  ROLES.forEach((role) => PROFILES.forEach((prof, pi) =>
+    (prof[role] || []).forEach((m) => {
+      const key = `${m.provider || ""}|${m.name}`;
+      const e = byModel.get(key)
+        || { name: m.name, size: m.size, provider: m.provider, roles: [[], []] };
+      e.roles[pi].push(m.label || role);
+      byModel.set(key, e);
+    })));
+  $("#models").innerHTML = `<div class="modelrow colhead"><span>Source</span>`
+    + `<span>Model</span><span class="r">Size</span>`
+    + `<span>Iris</span><span>Ops</span></div>`
+    + [...byModel.values()].sort((a, b) => byName(a.name, b.name))
+      .map((e) => `<div class="modelrow${
+        e.roles.some((rs) => rs.length > 1) ? " multi" : ""}">`
+      + `<span class="dim">${e.provider
+          ? SOURCES[e.provider] || e.provider
+          : e.size ? "oMLX" : "OpenRouter"}</span>`
+      + `<span class="nm" title="${e.name}">${e.name}</span>`
+      + `<span class="faint r">${e.size || "–"}</span>`
+      /* data-p labels the role cell on phones, where the row wraps into a
+         flow and the "Iris"/"Ops" column headers are hidden */
+      + e.roles.map((rs, ri) => rs.length
+        ? `<span class="mrole" data-p="${ri ? "ops" : "iris"}">${
+            rs.slice().sort(byName).join("<br>")}</span>`
+        : `<span class="mrole faint" data-p="${ri ? "ops" : "iris"}">–</span>`).join("")
+      + `</div>`).join("");
+  /* the "Local:" line runs outside the grid so it wraps instead of widening
+     the content-sized tracks */
+  const om = $("#othermodels");
+  om.hidden = !d.models.otherLocal?.length;
+  om.textContent = d.models.otherLocal?.length
+    ? "Local: " + d.models.otherLocal.slice()
+        .sort((a, b) => byName(a.name, b.name))
+        .map((m) => `${m.name} (${m.size})`).join(", ")
+    : "";
+  syncModelsLayout();
+
+  /* ---- services and jobs ------------------------------------------------ */
+
+  /* the column headers render with the rows: they have to live inside the
+     grid container to share its content-sized tracks */
+  $("#svcs").innerHTML = `<div class="svcrow colhead"><span></span><span>Name</span>`
+    + `<span>Port</span><span>Tailnet</span><span class="r">Uptime</span></div>`
+    + d.services.slice().sort(byName).map((s, i) => {
+    const cls = s.state === "ok" ? "ok" : s.state === "idle" ? "idl" : "bad";
+    const word = s.state === "ok" ? "[OK]" : s.state === "idle" ? "[--]" : "[!!]";
+    /* bad: marker in the uptime column, the full detail on the line below */
+    const bad = cls === "bad";
+    return `<div class="svcrow${banded(i)}"><span class="st ${cls}">${word}</span>`
+      + `<span class="nm">${s.name}</span>`
+      + `<span class="faint">${s.port || "–"}</span>`
+      + `<span class="faint">${s.tsPort || "–"}</span>`
+      + `<span class="faint r">${bad ? "–" : s.detail.replace(/^up /, "")}</span>`
+      + (bad ? `<div class="err">${s.detail}</div>` : "") + `</div>`;
+  }).join("");
+
+  /* the jobs split: jobs firing more than once a day sit in their own group
+     above the daily-and-slower ones; the labels only show when both groups
+     have rows. Banding continues across the split. */
+  const allJobs = d.cron.slice().sort(byName);
+  const jobGroups = [
+    ["Through the day", allJobs.filter((j) => j.perDay > 1)],
+    ["Once a day or less", allJobs.filter((j) => !(j.perDay > 1))],
+  ].filter(([, l]) => l.length);
+  const jobRow = (j, i) => {
+    const cls = j.state === "ok" ? "ok" : j.state === "bad" ? "bad" : "idl";
+    const word = j.state === "ok" ? "[OK]" : j.state === "bad" ? "[!!]" : "[??]";
+    /* the run key stays disabled while the job runs (snapshot flag), and
+       through the starting window after a press */
+    const busy = j.running
+      || Date.now() - (startedJobs.get(j.name) || 0) < 30000;
+    return `<div class="jobrow${banded(i)}"><span class="st ${cls}">${word}</span>`
+      + `<span class="nm">${j.name}${j.note ? `<span class="jnote">${j.note}</span>` : ""}</span>`
+      + `<span class="faint">${j.every || "–"}</span>`
+      + `<span class="faint">${j.first || "–"}</span>`
+      + `<span class="dim r">${j.last}</span>`
+      + `<button class="rowrun" data-job="${j.name}" aria-label="Run ${j.name}"`
+      + `${busy ? ' disabled title="running"' : ""}>`
+      + `${icon("play")}</button></div>`;
+  };
+  let jobIndex = 0;
+  $("#jobs").innerHTML = `<div class="jobrow colhead"><span></span><span>Name</span>`
+    + `<span>Every</span><span>First run</span><span class="r">Last ran</span>`
+    + `<span></span></div>`
+    + jobGroups.map(([label, list]) =>
+      (jobGroups.length > 1 ? `<div class="jobgroup">${label}</div>` : "")
+      + list.map((j) => jobRow(j, jobIndex++)).join("")).join("");
+  $$("#jobs .rowrun").forEach((b) =>
+    armedButton(b, "job/" + b.dataset.job, () => act(b.dataset.job)));
+
+  $("#mcp").innerHTML = `<div class="mcprow colhead"><span></span><span>Name</span>`
+    + `<span class="r">Port</span><span class="r">Last used</span></div>`
+    + d.mcpServers.slice().sort(byName).map((s, i) => {
+    const ok = s.state === "ok";
+    return `<div class="mcprow${banded(i)}"><span class="st ${ok ? "ok" : "bad"}">`
+      + `${ok ? "[OK]" : "[!!]"}</span>`
+      + `<span class="nm">${s.name}</span>`
+      + `<span class="faint r">${s.port}</span>`
+      + `<span class="dim r">${s.ago}</span></div>`;
+  }).join("");
+
+  /* ---- last tool calls: one column, newest first ------------------------ */
+
+  $("#recent").innerHTML = d.recentTools.map((r) =>
+    `<div class="recitem${r.p ? " hasp" : ""}"><div class="recrow">`
+    + `<span class="rc"><span class="nm">${r.server}:${r.tool}</span>`
+    + `${r.n > 1 ? ` <span class="mult">${r.n}x</span>` : ""}`
+    + (r.p ? ` <span class="recp">${r.p}</span>` : "")
+    + `</span><span class="dim r">${r.ago}</span></div></div>`).join("");
+
+  /* ---- overall status: anything bad on the page reads as WARN ----------- */
+
+  warn = [...d.services, ...d.mcpServers, ...d.cron]
+    .some((x) => x.state === "bad");
+
+  /* ---- links: the bar's apps, plus the full list at the bottom ----------- */
+
+  const url = Object.fromEntries(d.links.map((l) => [l.name, l.url]));
+  $("#app-webui").href = url.webui;
+  $("#app-actual").href = url.actual;
+  $("#app-actions").href = url.actions;
+
+  $("#linklist").innerHTML = `<div class="linkrow colhead">`
+    + `<span>Name</span><span>Address</span></div>`
+    + d.links.slice().sort(byName).map((l, i) =>
+    `<div class="linkrow${banded(i)}"><span class="nm">${l.name}</span>`
+    + `<a href="${l.url}" target="_blank" rel="noopener">${l.url}</a></div>`).join("");
+
+  /* ---- tool catalogue ---------------------------------------------------
+     Families A to Z, tools A to Z inside them. The four macOS servers stay
+     one family and split into sub-areas. A tool — or whole family — with no
+     call all week recedes to the faint tier. */
+
+  const used = {};
+  for (const [f, t, n] of d.tools7d) used[f + "." + t] = [0, 0, n];
+  for (const [f, t, n] of d.tools24h) (used[f + "." + t] ||= [0, 0, 0])[1] = n;
+  for (const [f, t, n] of d.tools1h) (used[f + "." + t] ||= [0, 0, 0])[0] = n;
+  const counts = (server, tool) => used[server + "." + tool] || [0, 0, 0];
+
+  /* one block per server, A to Z. The four macOS servers carry a "mac:"
+     prefix so they read as one group without a second heading level. */
+  const blocks = Object.keys(d.catalog).map((server) => ({
+    title: SERVER_FAMILY[server] ? "mac: " + server.replace(/^macos_/, "") : server,
+    rows: d.catalog[server].map((tool) => ({ tool, n: counts(server, tool) }))
+      .sort((a, b) => a.tool.localeCompare(b.tool)),
+  })).sort((a, b) => a.title.localeCompare(b.title)).map(({ title, rows }) => ({
+    lines: rows.length + 1,
+    html: `<section class="fam">`
+      + `<div class="fam-head${sum(rows.map((r) => r.n[2])) ? "" : " unused"}">`
+      + `<span class="fam-name">${title}</span>`
+      + [0, 1, 2].map((k) => `<span class="fam-n">${sum(rows.map((r) => r.n[k])) || "–"}</span>`).join("")
+      + `</div>`
+      + rows.map(({ tool, n }, i) => `<div class="tr${banded(i)}${n[2] ? "" : " unused"}${n[0] ? " hot" : n[1] ? " day" : ""}">`
+        + `<span class="tn">${tool}</span>`
+        + n.map((v) => `<span class="tc${v ? "" : " zero"}">${v || "–"}</span>`).join("")
+        + `</div>`).join("")
+      + `</section>`,
+  }));
+
+  /* two fixed columns, filled A to Z down one column at a time and cut
+     where the running line count passes half. CSS multi-column collapsed
+     to one column on short viewports, so the split is done here instead. */
+  const COLS = 2;
+  const target = sum(blocks.map((b) => b.lines)) / COLS;
+  const columns = Array.from({ length: COLS }, () => []);
+  let col = 0, filled = 0;
+  for (const b of blocks) {
+    columns[col].push(b.html);
+    filled += b.lines;
+    if (col < COLS - 1 && filled >= target * (col + 1)) col++;
+  }
+  $("#catalog").innerHTML = columns.map((list) => `<div>${list.join("")}</div>`).join("");
+
+  /* ---- sessions: share bar per window plus one counts row per name ------ */
+
+  /* at most four named segments (shades q1..q4); everything else pools into
+     the q5 tail */
+  const SLOTS = 4;
+
+  function shareBar(host, list, slot) {
+    const total = sum(list.map((x) => x.sessions));
+    if (!total) {
+      host.innerHTML = `<div class="none" style="width:100%">–</div>`;
+      return;
+    }
+    const segs = list.filter((x) => slot[x.name])
+      .map((x) => [x.sessions, slot[x.name]]);
+    const rest = sum(list.filter((x) => !slot[x.name]).map((x) => x.sessions));
+    if (rest) segs.push([rest, 5]);
+    host.innerHTML = segs.map(([n, q]) => {
+      const pct = n / total * 100;
+      return `<div class="q${q}" data-q="${q}" style="width:${pct}%">${pct >= 7 ? n : ""}</div>`;
+    }).join("");
+  }
+
+  /* shades follow the week list, the widest window, so a name keeps its
+     shade across the three bars; only the top four get their own shade,
+     the rest share the tail. Excluded names stay out of the bars and
+     sit last in the rows, faint with a hollow marker. */
+  function sessionPanel([hourBar, dayBar, weekBar, rowsHost], week, day, hour, excluded = []) {
+    const out = (x) => excluded.includes(x.name);
+    const counted = (list) => list.filter((x) => !out(x));
+    const slot = {};
+    counted(week).slice(0, SLOTS).forEach((x, i) => { slot[x.name] = i + 1; });
+    shareBar($(hourBar), counted(hour), slot);
+    shareBar($(dayBar), counted(day), slot);
+    shareBar($(weekBar), counted(week), slot);
+    const cnt = (list) => Object.fromEntries(list.map((x) => [x.name, x.sessions]));
+    const h = cnt(hour), dy = cnt(day);
+    $(rowsHost).innerHTML = [...counted(week), ...week.filter(out)].map((x, i) =>
+      `<div class="sessrow${out(x) ? " excl" : banded(i)}"${out(x) ? "" : ` data-q="${slot[x.name] || 5}"`}>`
+      + `<i${out(x) ? "" : ` class="q${slot[x.name] || 5}"`}></i>`
+      + `<span class="tn">${x.name}</span>`
+      + [h[x.name] || 0, dy[x.name] || 0, x.sessions].map((v) =>
+        `<span class="tc${v ? "" : " zero"}">${v || "–"}</span>`).join("")
+      + `</div>`).join("");
+  }
+
+  sessionPanel(["#m1", "#m24", "#m7", "#mrows"], d.models7d, d.models24h, d.models1h);
+  sessionPanel(["#s1", "#s24", "#s7", "#srows"], d.surfaces7d, d.surfaces24h, d.surfaces1h, ["tool"]);
+}
+</script>
+</body>
+</html>

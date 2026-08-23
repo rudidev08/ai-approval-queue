@@ -1,0 +1,364 @@
+#!/usr/bin/python3
+# One-glance status of the Iris assistant stack on this Mac: host resources,
+# services, hermes cron jobs, and backup freshness, checked against
+# manifest.json (the expected list — anything missing from the live system
+# is flagged). Text by default, --json for machines (MCP tool, dashboard page,
+# future visualizers). Runs on the system python, stdlib only.
+
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+from datetime import datetime
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+JOBS_FILE = os.path.expanduser("~/.hermes/cron/jobs.json")
+CMD_TIMEOUT = 10
+HTTP_TIMEOUT = 4
+OVERDUE_GRACE_MIN = 15
+
+NOW = datetime.now().astimezone()
+
+
+def _run(*cmd):
+    return subprocess.run(list(cmd), capture_output=True, text=True,
+                          timeout=CMD_TIMEOUT).stdout
+
+
+# ---- host metrics (each returns a display string; "?" if a parser breaks) --
+
+def _cpu():
+    # two samples; the first is a since-boot average, so read the second
+    lines = [l for l in _run("top", "-l", "2", "-n", "0").splitlines()
+             if "CPU usage" in l]
+    idle = float(re.search(r"([\d.]+)%\s*idle", lines[-1]).group(1))
+    return round(100 - idle, 1)
+
+
+def _gpu():
+    out = _run("ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator")
+    vals = [int(v) for v in re.findall(r'"Device Utilization %"=(\d+)', out)]
+    return round(sum(vals) / len(vals), 1)
+
+
+def _ram():
+    # match the menu-bar app: used = active + wired + compressed
+    out = _run("vm_stat")
+    pagesize = int(re.search(r"page size of (\d+) bytes", out).group(1))
+
+    def pages(label):
+        return int(re.search(r"%s:\s+(\d+)\." % label, out).group(1))
+
+    used = (pages("Pages active") + pages("Pages wired down")
+            + pages("Pages occupied by compressor")) * pagesize
+    total = int(_run("sysctl", "-n", "hw.memsize"))
+    return round(used / total * 100, 1)
+
+
+_PRESSURE = {"1": "normal", "2": "warning", "4": "critical"}
+
+
+def _pressure():
+    lvl = _run("sysctl", "-n", "kern.memorystatus_vm_pressure_level").strip()
+    return _PRESSURE.get(lvl, "level %s" % lvl)
+
+
+def _disk_free():
+    s = os.statvfs("/")
+    free = s.f_bavail * s.f_frsize
+    if free >= 1e12:
+        return "%.1f TB free" % (free / 1e12)
+    return "%.0f GB free" % (free / 1e9)
+
+
+def _host():
+    vals = {}
+    for key, fn in (("cpu", _cpu), ("gpu", _gpu), ("ram", _ram),
+                    ("pressure", _pressure), ("disk", _disk_free)):
+        try:
+            vals[key] = fn()
+        except Exception:
+            vals[key] = "?"
+    return vals
+
+
+# ---- humanized durations ---------------------------------------------------
+
+def _age(seconds):
+    if seconds < 90:
+        return "%.0fs" % seconds
+    if seconds < 90 * 60:
+        return "%.0fm" % (seconds / 60)
+    if seconds < 36 * 3600:
+        return "%.0fh" % (seconds / 3600)
+    return "%.0fd" % (seconds / 86400)
+
+
+def _uptime(etime):
+    # ps etime: [[dd-]hh:]mm:ss
+    m = re.match(r"(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)", etime.strip())
+    d, h, mi = int(m.group(1) or 0), int(m.group(2) or 0), int(m.group(3))
+    if d:
+        return "%dd %dh" % (d, h)
+    if h:
+        return "%dh %dm" % (h, mi)
+    return "%dm" % mi
+
+
+def _sched(expr):
+    # "0 6 * * *" -> "06:00", "0 2 * * 1" -> "Mon 02:00",
+    # "23 */8 * * *" -> "every 8h at :23"; anything else raw
+    parts = expr.split()
+    if len(parts) != 5:
+        return expr
+    m, h, dom, mon, dow = parts
+    if m.isdigit() and re.fullmatch(r"\*/\d+", h) and dom == mon == dow == "*":
+        return "every %sh at :%02d" % (h[2:], int(m))
+    if not (m.isdigit() and h.isdigit()):
+        return expr
+    hhmm = "%02d:%02d" % (int(h), int(m))
+    if dom == "*" and mon == "*" and dow == "*":
+        return hhmm
+    days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    if dom == "*" and mon == "*" and dow.isdigit():
+        return "%s %s" % (days[int(dow)], hhmm)
+    return expr
+
+
+def _ago(iso):
+    return _age((NOW - datetime.fromisoformat(iso)).total_seconds())
+
+
+# ---- checks ----------------------------------------------------------------
+
+def _launchd_table():
+    table = {}
+    for line in _run("launchctl", "list").splitlines()[1:]:
+        cols = line.split("\t")
+        if len(cols) == 3:
+            table[cols[2]] = (cols[0], cols[1])  # (pid or "-", last exit)
+    return table
+
+
+def _http(url):
+    # any response means the server is alive; >=500 counts as a problem
+    try:
+        with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT) as r:
+            return r.status, None
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except Exception as e:
+        return None, str(getattr(e, "reason", e))
+
+
+def _last_restart(log):
+    # webui-restart watcher log: one line per restart, local timestamp first
+    try:
+        with open(os.path.expanduser(log)) as f:
+            lines = [l for l in f if " restarted webui: " in l]
+    except OSError:
+        lines = []
+    if not lines:
+        return "no restarts yet"
+    ts = datetime.strptime(lines[-1][:19], "%Y-%m-%d %H:%M:%S").astimezone()
+    return "last %s" % _age((NOW - ts).total_seconds())
+
+
+def _check_service(item, launchd, problems):
+    parts, bad = [], []
+    if "launchd" in item:
+        pid, exit_st = launchd.get(item["launchd"], (None, None))
+        if pid is None:
+            bad.append("NOT LOADED in launchd")
+        elif item.get("event"):
+            # short-lived WatchPaths job: idle is its normal state, so only
+            # the last completed restart is reported
+            if pid == "-" and exit_st != "0":
+                bad.append("last run FAILED (exit %s)" % exit_st)
+            parts.append(_last_restart(item["restart_log"]))
+        elif pid == "-":
+            bad.append("loaded, not running (last exit %s)" % exit_st)
+        else:
+            up = _uptime(_run("ps", "-o", "etime=", "-p", pid))
+            parts.append("up %s" % up)
+    detail_extra = None
+    if "http" in item:
+        code, err = _http(item["http"])
+        if code is None:
+            bad.append("http FAILED (%s)" % err)
+        elif code >= 500:
+            bad.append("http %d" % code)
+        else:
+            parts.append("http %d" % code)
+            if item["name"] == "omlx":
+                detail_extra = _omlx_detail()
+    if detail_extra:
+        parts.append(detail_extra)
+    state = "!!" if bad else "ok"
+    for b in bad:
+        problems.append("%s: %s" % (item["name"], b))
+    return state, " · ".join(bad + parts)
+
+
+_OMLX_HEALTH = None
+
+
+def _omlx_detail():
+    global _OMLX_HEALTH
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:2130/health",
+                                    timeout=HTTP_TIMEOUT) as r:
+            _OMLX_HEALTH = json.load(r)
+    except Exception:
+        return None
+    p = _OMLX_HEALTH.get("engine_pool", {})
+    return "%s/%s models" % (p.get("loaded_count"), p.get("model_count"))
+
+
+def _model_line():
+    if not _OMLX_HEALTH:
+        return "—"
+    p = _OMLX_HEALTH.get("engine_pool", {})
+    return "%s · %.1f GB loaded" % (_OMLX_HEALTH.get("default_model", "?"),
+                                    p.get("current_model_memory", 0) / 1e9)
+
+
+def _newest_files(item, has_run, problems):
+    # one job can write several backup files; each is checked on its own so a
+    # single stale or missing one is named rather than hidden behind the others
+    paths = item["newest_files"]
+    ages, missing, stale = [], 0, 0
+    for p in paths:
+        try:
+            mtime = os.path.getmtime(os.path.expanduser(p))
+        except OSError:
+            missing += 1
+            if has_run:
+                problems.append("%s: backup file missing (%s)"
+                                % (item["name"], p))
+            continue
+        age_s = (NOW - datetime.fromtimestamp(mtime).astimezone()
+                 ).total_seconds()
+        ages.append(age_s)
+        if has_run and age_s > item["max_file_age_h"] * 3600:
+            stale += 1
+            problems.append("%s: %s is %s old" % (item["name"], p, _age(age_s)))
+    parts = ["%d files" % len(paths)]
+    if missing:
+        parts.append("%d MISSING" % missing)
+    parts.append("oldest %s ago" % _age(max(ages)) if ages else "none written")
+    return ", ".join(parts), bool(has_run and (missing or stale))
+
+
+def _check_cron(item, jobs, problems):
+    job = jobs.get(item["name"])
+    if job is None:
+        problems.append("%s: in manifest, not in hermes cron" % item["name"])
+        return "!!", "MISSING — in manifest, not in hermes cron"
+    parts, bad = [], []
+    parts.append(_sched(job.get("schedule_display") or "?"))
+    has_run = job.get("last_run_at") is not None
+    if not job.get("enabled", False):
+        bad.append("disabled")
+    elif job.get("last_status") not in (None, "ok"):
+        err = (job.get("last_error") or job.get("last_status") or "")[:80]
+        bad.append("FAILED %s ago: %s" % (_ago(job["last_run_at"]), err))
+    elif job.get("next_run_at"):
+        late = (NOW - datetime.fromisoformat(job["next_run_at"])
+                ).total_seconds()
+        if late > OVERDUE_GRACE_MIN * 60:
+            bad.append("overdue — was due %s ago" % _age(late))
+    if not bad:
+        parts.append("ok %s ago" % _ago(job["last_run_at"]) if has_run
+                     else "never ran")
+    file_stale = False
+    if "newest_files" in item:
+        note, file_stale = _newest_files(item, has_run, problems)
+        parts.append(note)
+    for b in bad:
+        problems.append("%s: %s" % (item["name"], b))
+    state = "!!" if bad or file_stale else ("ok" if has_run else "--")
+    return state, " · ".join([parts[0]] + bad + parts[1:])
+
+
+# ---- assemble --------------------------------------------------------------
+
+def collect():
+    with open(os.path.join(HERE, "manifest.json")) as f:
+        manifest = json.load(f)
+    try:
+        with open(JOBS_FILE) as f:
+            jobs = {j["name"]: j for j in json.load(f)["jobs"]}
+    except OSError:
+        jobs = {}
+    launchd = _launchd_table()
+    problems = []
+    categories = []
+    manifest_cron_names = set()
+    for cat in manifest["categories"]:
+        rows = []
+        for item in cat["items"]:
+            kind = item["type"]
+            if kind == "service":
+                state, detail = _check_service(item, launchd, problems)
+            else:
+                manifest_cron_names.add(item["name"])
+                state, detail = _check_cron(item, jobs, problems)
+            rows.append({"name": item["name"], "desc": item["desc"],
+                         "kind": kind, "state": state, "detail": detail})
+        categories.append({"name": cat["name"], "items": rows})
+    unlisted = [n for n in jobs if n not in manifest_cron_names]
+    if unlisted:
+        rows = []
+        for n in sorted(unlisted):
+            problems.append("%s: cron job not in manifest" % n)
+            rows.append({"name": n, "desc": "", "kind": "cron", "state": "!!",
+                         "detail": "cron job not in manifest — add it"})
+        categories.append({"name": "unlisted", "items": rows})
+    return {
+        "generated": NOW.isoformat(timespec="seconds"),
+        "ok": not problems,
+        "problems": problems,
+        "host": _host(),
+        "model": _model_line(),
+        "categories": categories,
+    }
+
+
+def render(status):
+    verdict = ("OK" if status["ok"]
+               else "%d PROBLEM%s" % (len(status["problems"]),
+                                      "S" if len(status["problems"]) > 1 else ""))
+    h = status["host"]
+    out = [
+        "iris status · %s · %s" % (verdict, NOW.strftime("%Y-%m-%d %H:%M")),
+        "",
+        "host   CPU %s%%  GPU %s%%  RAM %s%% (%s)  disk %s"
+        % (h["cpu"], h["gpu"], h["ram"], h["pressure"], h["disk"]),
+        "model  %s" % status["model"],
+    ]
+    width = max(len(r["name"]) for c in status["categories"]
+                for r in c["items"])
+    for cat in status["categories"]:
+        out.append("")
+        out.append(cat["name"])
+        for r in cat["items"]:
+            out.append("  %s  %s  %s  %s" % (r["state"],
+                                             r["name"].ljust(width),
+                                             r["kind"].ljust(9), r["detail"]))
+    return "\n".join(out)
+
+
+def main():
+    status = collect()
+    if "--json" in sys.argv[1:]:
+        print(json.dumps(status, indent=1))
+    else:
+        print(render(status))
+    sys.exit(0 if status["ok"] else 1)
+
+
+if __name__ == "__main__":
+    main()
