@@ -1,6 +1,6 @@
 # Setup — actions_inbox
 
-Thin MCP proxy to the actions service on 127.0.0.1:13727. Five state tools only: scan (new inbox emails + pending-set summaries + open categorize asks), save_set (persist a proposed set, or mark emails ignored), ask_categorize (store a categorize ask, get the numbered draft lines), add_to_actions (queue an iris-inbox email for the next scan), run_action (run a chat-inbox mail's action — finance: suggestion cards from the mail's content). No execution tools exist here — approving a set's rows is a human action on the actions page.
+Thin MCP proxy to the actions service on 127.0.0.1:13727. Five state tools only: scan (new inbox emails + pending-set summaries + open categorize asks), save_set (persist a proposed set, or mark emails ignored), ask_categorize (store a categorize ask, get the numbered draft lines), add_to_actions (queue an iris-inbox email for the next scan), create_cards_from_email (finance suggestion cards from one chat-inbox mail's content). No execution tools exist here — approving a set's rows is a human action on the actions page.
 
 ## Pieces
 
@@ -11,7 +11,7 @@ Thin MCP proxy to the actions service on 127.0.0.1:13727. Five state tools only:
 
 ## Depends on
 
-- the actions service: launchd com.example.iris.actions running ../../actions/server.py — service, page, state and cron job documented in ~/Iris/hermes/settings.md (actions section; a local file, not part of this repo)
+- the actions service: launchd com.example.iris.actions running ../../actions/server.py — service, page, state and cron job documented in ~/Iris/hermes/settings.md (actions section)
 - the actions-inbox-scan cron job (agent job, skill actions-inbox, pinned model) is what calls these tools unattended
 
 ## Register (iris ~/.hermes/config.yaml)
@@ -29,4 +29,4 @@ mcp_servers:
 
 ## rules.yaml (tool-approvals plugin)
 
-- all five tools: unscoped allow — unattended cron runs must reach scan/save_set (cron_mode deny refuses prompts); on email the catch-all blocks scan/save_set/ask_categorize and the email section allows add_to_actions (records an intent only)
+- all four tools: unscoped allow — unattended cron runs must reach scan/save_set (cron_mode deny refuses prompts); on email the catch-all blocks scan/save_set/ask_categorize and the email section allows add_to_actions (records an intent only) and create_cards_from_email (finance card proposals)

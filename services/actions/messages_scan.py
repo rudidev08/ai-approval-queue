@@ -45,8 +45,10 @@ import urllib.request
 from datetime import datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+IRIS = os.path.dirname(os.path.dirname(HERE))
+sys.path.append(os.path.join(IRIS, "services", "mcp", "common"))
+import hermes_env  # noqa: E402
 ENV_FILE = os.path.join(HERE, "messages.env")
-HERMES_ENV = os.path.expanduser("~/.hermes/.env")
 SERVICE = "http://127.0.0.1:13727"
 CANDIDATES_URL = SERVICE + "/api/messages/candidates"
 BATCH_URL = SERVICE + "/api/messages/batch"
@@ -87,14 +89,7 @@ def log(msg):
 
 def env_config():
     """KEY=VALUE pairs from messages.env; MESSAGES_MODEL is required."""
-    values = {}
-    with open(ENV_FILE, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            values[key.strip()] = value.strip().strip('"').strip("'")
+    values = hermes_env.read(ENV_FILE)
     if not values.get("MESSAGES_MODEL"):
         raise RuntimeError(f"MESSAGES_MODEL missing in {ENV_FILE}")
     values.setdefault("MESSAGES_URL", "https://openrouter.ai/api/v1")
@@ -106,19 +101,12 @@ def env_config():
 
 
 def api_key(name):
-    """The named variable out of ~/.hermes/.env (plain KEY=VALUE parse —
-    the launchd environment carries none of it)."""
+    """The named variable out of ~/.hermes/.env (the launchd environment
+    carries none of it)."""
     try:
-        with open(HERMES_ENV, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    if k.strip() == name:
-                        return v.strip().strip('"').strip("'")
-    except OSError:
-        pass
-    raise RuntimeError(f"{name} missing in {HERMES_ENV}")
+        return hermes_env.read()[name]
+    except (OSError, KeyError):
+        raise RuntimeError(f"{name} missing in {hermes_env.PATH}") from None
 
 
 def post(url, payload, timeout):
@@ -235,8 +223,12 @@ def _call_once(cfg, candidates, locations):
 
     def attempt(with_schema, with_reasoning):
         body = {"model": cfg["MESSAGES_MODEL"], "messages": messages,
-                "temperature": float(cfg["MESSAGES_TEMPERATURE"]),
                 "max_tokens": int(cfg["MESSAGES_MAX_TOKENS"])}
+        # k3 rejects every temperature but 1, so the setting is left empty for
+        # it and the field omitted; another endpoint still gets its value
+        temperature = cfg.get("MESSAGES_TEMPERATURE", "").strip()
+        if temperature:
+            body["temperature"] = float(temperature)
         # low effort keeps the reasoner inside its 4096-token output cap —
         # default effort overflowed it even on a 6-item group
         if with_reasoning and effort:

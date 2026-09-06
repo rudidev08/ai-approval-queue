@@ -7,11 +7,13 @@ this directory), or python3 services/actions/test_messages_scan.py from the
 repo root.
 """
 
+import io
 import json
 import pathlib
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -136,6 +138,62 @@ class TestMainFlow(unittest.TestCase):
         # ...then the failure record, naming what was not proposed
         self.assertEqual(batches[1]["error"]["step"], "llm")
         self.assertIn("202", batches[1]["error"]["message"])
+
+    def test_unanswered_counter_matches_actual_skips(self):
+        """Two answered, two unanswered among four candidates — the summary
+        line's count must be exactly 2: not off by one, not reset per
+        candidate, and not cut short by an early exit from the loop."""
+        c2 = dict(CAND, attachment_id=202)
+        c3 = dict(CAND, attachment_id=303)
+        c4 = dict(CAND, attachment_id=404)
+        verdicts = {**self.save_verdict(),
+                    202: {"attachment_id": 202, "verdict": "ignore",
+                          "location_id": "", "filename": "", "reason": ""}}
+        # 303 and 404 get no verdict at all -> unanswered
+        logs = []
+        with mock.patch.object(ms, "log", logs.append):
+            batch = self.run_scan([CAND, c2, c3, c4], verdicts)
+        self.assertEqual([c["attachment_id"] for c in batch["cards"]], [101])
+        self.assertEqual(batch["ignored"], [202])
+        summary = [m for m in logs if m.startswith("llm: ") and "unanswered" in m]
+        self.assertEqual(summary, ["llm: 1 saves, 1 ignored, 2 unanswered of 4"])
+
+    def test_candidates_409_posts_nothing_and_does_not_exit(self):
+        """A candidates-build-already-running 409 is not a scan failure: no
+        error record, no exit — kills the == -> != and 409 -> 410 mutants
+        on the special-case check."""
+        posts = []
+
+        def fake_post(url, payload, timeout):
+            if url == ms.CANDIDATES_URL:
+                raise urllib.error.HTTPError(
+                    url, 409, "Conflict", None, io.BytesIO(b"busy"))
+            posts.append((url, payload))
+            return {"ok": True}
+
+        with mock.patch.object(ms, "post", fake_post):
+            ms.main()  # must return normally, not sys.exit(1)
+        self.assertEqual(posts, [])
+
+    def test_non_409_http_error_posts_an_error_record_and_exits(self):
+        """The contrast case: a genuine HTTP failure (not 409) is not
+        swallowed like the busy-conflict — it posts an error record naming
+        the failure and exits non-zero."""
+        posts = []
+
+        def fake_post(url, payload, timeout):
+            if url == ms.CANDIDATES_URL:
+                raise urllib.error.HTTPError(
+                    url, 500, "Server Error", None, io.BytesIO(b"boom"))
+            posts.append((url, payload))
+            return {"ok": True}
+
+        with mock.patch.object(ms, "post", fake_post):
+            with self.assertRaises(SystemExit):
+                ms.main()
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0][1]["error"]["step"], "candidates")
+        self.assertIn("500", str(posts[0][1]["error"]["message"]))
 
     def test_repeated_filename_into_the_same_folder_is_renamed(self):
         c2 = dict(CAND, attachment_id=202)

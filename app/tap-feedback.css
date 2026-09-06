@@ -9,7 +9,11 @@
    under way — the two share neither color nor motion shape. Grays and
    blue come from the page's --sub, --faint and --tool tokens. */
 
-.sq, .key { transition: transform .08s, color .15s,
+/* touch-action: manipulation — Safari reads two quick taps on a small
+   element as double-tap-to-zoom; the two-tap confirm keys invite exactly
+   that gesture. This keeps tap and pinch, drops only the double-tap zoom. */
+.sq, .key { touch-action: manipulation;
+  transition: transform .08s, color .15s,
   background-color .15s, border-color .15s; }
 .sq:enabled:active, .key:enabled:active {
   transform: scale(.92); }

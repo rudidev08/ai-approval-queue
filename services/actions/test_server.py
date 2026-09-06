@@ -27,6 +27,7 @@ import messages
 import research
 import server
 import hermes_audit
+import jobs
 import system
 
 CREATE_ARGS = {"calendar": "Personal", "title": "Thursday Run Club",
@@ -65,7 +66,8 @@ class TestHandler(unittest.TestCase):
                        hermes_audit.ERR, messages.STATE_FILE, messages.STATE,
                        system.LABELS,
                        research.TOPICS, research.REPORTS, research.RUNS,
-                       research.CLEARED, research.CRON_JOBS)
+                       research.CLEARED, common.CRON_JOBS,
+                       jobs.JOBS_FILE, jobs.EXECUTIONS, jobs._IRIS_STATES)
         common.STATE_DIR = tmp
         emails.STATE_FILE = tmp / "state.json"
         # bound at import from the real state dir, like emails.STATE_FILE;
@@ -81,14 +83,21 @@ class TestHandler(unittest.TestCase):
         # no labels means system.state() runs no launchctl, so /api/state here
         # never reads the real launchd domain
         system.LABELS = {}
+        # the jobs area reads hermes' jobs file and executions ledger, and
+        # every other area reads the same jobs file through common for its
+        # job stamps; pointed here, /api/state sees no jobs
+        jobs.JOBS_FILE = tmp / "cron-jobs.json"
+        jobs.EXECUTIONS = tmp / "executions.db"
+        jobs.JOBS_FILE.write_text('{"jobs": []}')
+        jobs._IRIS_STATES = {}
+        common.CRON_JOBS = jobs.JOBS_FILE
         # the research area reads the vault's research tree, the driver's
-        # runs log, its cleared-flags store and the cron jobs file; pointed
-        # at the temp dir, /api/state sees no topics
+        # runs log and its cleared-flags store; pointed at the temp dir,
+        # /api/state sees no topics
         research.TOPICS = tmp / "research-topics"
         research.REPORTS = tmp / "research-reports"
         research.RUNS = tmp / "research-runs.jsonl"
         research.CLEARED = tmp / "research-cleared.json"
-        research.CRON_JOBS = tmp / "research-jobs.json"
         server._STATUS = {}
         emails._CALENDAR_COLORS = {}
         self.spawns = []
@@ -117,7 +126,8 @@ class TestHandler(unittest.TestCase):
         messages.STATE_FILE, messages.STATE = self._saved[12:14]
         system.LABELS = self._saved[14]
         research.TOPICS, research.REPORTS, research.RUNS = self._saved[15:18]
-        research.CLEARED, research.CRON_JOBS = self._saved[18:20]
+        research.CLEARED, common.CRON_JOBS = self._saved[18:20]
+        jobs.JOBS_FILE, jobs.EXECUTIONS, jobs._IRIS_STATES = self._saved[20:23]
         server.ALLOWED_HOSTS.clear()
         server.ALLOWED_HOSTS.update(self._saved[5])
         server.ALLOWED_ORIGINS.clear()
@@ -175,15 +185,58 @@ class TestHandler(unittest.TestCase):
         conn.close()
         self.assertEqual(res.status, 400)
 
+    # ---- /demo ----
+
+    def test_demo_state_has_every_key_the_page_reads(self):
+        code, d = self.call("GET", "/demo/api/state?hold-update")
+        self.assertEqual(code, 200)
+        self.assertEqual(sorted(d), ["emails", "finance", "finance_report",
+                                     "hermes_audit", "jobs", "messages", "research",
+                                     "status_checked_at", "status_issues",
+                                     "system"])
+        # the real state has one set; the demo data is its own
+        self.assertNotIn("s1", [x["id"] for x in d["emails"]["sets"]])
+
+    def test_demo_row_reads_and_unknown_paths(self):
+        code, d = self.call("GET", "/demo/api/emails/body?email_id=m-mara")
+        self.assertEqual((code, "text" in d), (200, True))
+        code, d = self.call("GET", "/demo/api/research/report?slug=daily-new-topic")
+        self.assertEqual((code, d["report"]), (200, None))
+        self.assertEqual(self.call("GET", "/demo/api/nope")[0], 404)
+
+    def test_demo_post_is_a_202_that_does_nothing(self):
+        code, _ = self.call("POST", "/demo/api/emails/resolve",
+                            {"set_id": "s1", "row_id": "r1", "decision": "approve",
+                             "args_sha256": self._sha("r1")}, self.H)
+        self.assertEqual(code, 202)
+        self.assertEqual(self.spawns, [])
+        self.assertEqual(emails.STATE["sets"]["s1"]["rows"][0]["status"], "pending")
+        # the guard still applies
+        self.assertEqual(self.call("POST", "/demo/api/emails/resolve", {})[0], 403)
+
     # ---- /api/state assembly ----
 
     def test_state_has_the_areas_and_no_status_until_first_check(self):
         code, d = self.call("GET", "/api/state")
         self.assertEqual(code, 200)
         self.assertEqual(sorted(d), ["emails", "finance", "finance_report",
-                                     "hermes_audit", "messages",
-                                     "research", "system"])
+                                     "hermes_audit", "jobs", "messages", "research", "system"])
         self.assertEqual([s["id"] for s in d["emails"]["sets"]], ["s1"])
+
+    def test_state_poll_with_hold_update_stamps_the_finance_page(self):
+        finance._PAGE_SEEN = 0.0
+        try:
+            code, _ = self.call("GET", "/api/state?hold-update")
+            self.assertEqual(code, 200)
+            self.assertGreater(finance._PAGE_SEEN, 0.0)
+        finally:
+            finance._PAGE_SEEN = 0.0
+
+    def test_state_poll_without_the_flag_does_not_stamp(self):
+        finance._PAGE_SEEN = 0.0
+        code, _ = self.call("GET", "/api/state")
+        self.assertEqual(code, 200)
+        self.assertEqual(finance._PAGE_SEEN, 0.0)
 
     def test_state_carries_status_once_checked(self):
         server._STATUS = {"issues": 2, "checked_at": "2026-08-11T00:00:00Z"}
@@ -282,13 +335,19 @@ class TestHandler(unittest.TestCase):
 
 class TestStatusCount(unittest.TestCase):
     def setUp(self):
-        self._saved = (server._STATUS, server.subprocess)
+        self._saved = (server._STATUS, server.subprocess, jobs._IRIS_STATES,
+                       jobs._IRIS_GENERATED)
         server._STATUS = {}
+        jobs._IRIS_STATES = {}
+        jobs._IRIS_GENERATED = None
 
     def tearDown(self):
-        server._STATUS, server.subprocess = self._saved
+        (server._STATUS, server.subprocess, jobs._IRIS_STATES,
+         jobs._IRIS_GENERATED) = self._saved
 
-    def _run_with(self, stdout='{"categories": []}', returncode=0, raises=None):
+    def _run_with(self, stdout='{"generated": "2026-08-25T10:00:00-07:00", '
+                               '"categories": []}',
+                  returncode=0, raises=None):
         class Proc:
             pass
         p = Proc()
@@ -305,13 +364,20 @@ class TestStatusCount(unittest.TestCase):
         server._status_once()
 
     def test_counts_everything_not_ok_or_idle(self):
-        self._run_with(json.dumps({"categories": [
-            {"name": "a", "items": [{"state": "ok"}, {"state": "!!"},
-                                    {"state": "--"}, {"state": "?"}]},
-            {"name": "b", "items": [{"state": "ok"}, {"state": "!!"}]},
+        item = lambda state, kind="service", name="x", detail="": {
+            "state": state, "kind": kind, "name": name, "detail": detail}
+        self._run_with(json.dumps({
+            "generated": "2026-08-25T10:00:00-07:00", "categories": [
+            {"name": "a", "items": [item("ok"), item("!!"),
+                                    item("--"), item("?")]},
+            {"name": "b", "items": [item("ok"),
+                                    item("!!", "cron", "backup", "FAILED")]},
         ]}))
         self.assertEqual(server._STATUS["issues"], 3)
         self.assertTrue(server._STATUS["checked_at"])
+        # the same pass hands the cron items' states to the jobs area
+        self.assertEqual(jobs._IRIS_STATES,
+                         {"backup": {"state": "!!", "detail": "FAILED"}})
 
     def test_unparseable_output_is_minus_one(self):
         self._run_with(stdout="not json")

@@ -19,25 +19,13 @@ resets it, and reads the three files it leaves in ~/.local/state/hermes-audit/:
              leaves the previous pass on file, and that must not read as the
              pass that was just asked for.
 
-The weekly hermes-audit cron job (~/.hermes/scripts/hermes-audit.sh) is a
+The weekly hermes-audit cron job (hermes-home/scripts/hermes-audit.sh) is a
 third starter; state() reads its stamps out of hermes' cron files so the page
 can show when the scheduled pass last ran and runs next.
 
 The run is detached (start_new_session): a pass can take an hour, and log
 rotation SIGTERMs this service in the middle of one. Nothing is kept in this
 process — the files carry it all across a restart.
-
-Dismissing a finding hides it on the page and nowhere else: this service owns
-state/hermes-audit-dismissed.json, audit.py knows nothing about it, so the
-markdown report and the iris_ops tools keep carrying every finding. The file
-holds the pass it belongs to and the [category, finding] pairs hidden in it:
-
-    {"run": "<the record's started_at>", "findings": [["backups", "..."], ...]}
-
-A file whose run is not the record's started_at is an older pass's list and
-reads as empty. seed_run() stamps a fresh started_at at the top of every run,
-so any starter — this page, iris_hermes_audit in chat, a hand-run script —
-clears the dismissed findings, and the file never holds more than one pass.
 
 Endpoints (HANDLERS; guards and dispatch live in server.py):
 
@@ -48,41 +36,42 @@ Endpoints (HANDLERS; guards and dispatch live in server.py):
 - POST /api/hermes-audit/reset   audit.py --reset: remove the audit's state file,
                                 so the next run is a first pass — every check
                                 reviews from scratch, every baseline reseeds
-- POST /api/hermes-audit/dismiss {category, finding}: hide one finding of this
-                                pass. 404 when the record does not carry it
-- POST /api/hermes-audit/restore bring back everything dismissed in this pass
+- POST /api/hermes-audit/ignore-doctor {category, finding}: append the finding's
+                                doctor warning to doctor_known in the audit's
+                                expected.yaml, so future runs stop flagging it
 """
 
 import fcntl
 import json
 import os
 import pathlib
-import sqlite3
 import subprocess
 import threading
 from datetime import datetime
 
-from common import STATE_DIR, _log
+from common import _log, cron_job
 
 APP = pathlib.Path(__file__).resolve().parent
 SCRIPT = APP.parent / "hermes-audit" / "audit.py"
+EXPECTED = APP.parent / "hermes-audit" / "expected.yaml"
 UV = pathlib.Path.home() / ".local" / "bin" / "uv"
 
-STATE = pathlib.Path.home() / ".local" / "state" / "hermes-audit"
+# how audit.py prefixes a doctor finding; the text after it is the doctor
+# line itself, which is what doctor_known entries match against
+DOCTOR_MARK = ": new doctor warning — "
+
+STATE = pathlib.Path.home() / "Local" / "iris-hermes-audit"
 LOCK = STATE / "lock"
 RUN = STATE / "run.json"
 ERR = STATE / "last-run.err"
-DISMISSED = STATE_DIR / "hermes-audit-dismissed.json"   # this service's own file
 
 # the weekly cron job that also runs the audit; its stamps give the page the
 # last-run and next-run indicators (same read as the messages area)
 CRON_JOB = "hermes-audit"
-CRON_JOBS = pathlib.Path.home() / ".hermes/cron/jobs.json"
-CRON_EXECUTIONS = pathlib.Path.home() / ".hermes/cron/executions.db"
 
-# dismiss and restore are read-modify-write on one file, and two findings
+# ignore-doctor is a read-modify-write on expected.yaml, and two warnings
 # tapped in quick succession land on two request threads
-_DISMISS_LOCK = threading.Lock()
+_KNOWN_LOCK = threading.Lock()
 
 ERR_TAIL = 800        # chars of the failed run's stderr the page shows
 CONTROL_TIMEOUT = 120  # --stop waits 5s for the run to go; uv start-up is the rest
@@ -124,61 +113,12 @@ def _run_record():
     return record if isinstance(record, dict) else None
 
 
-def _dismissed(record):
-    """The (category, finding) pairs hidden in the pass `record` holds. Empty
-    when the file is missing, unreadable, or stamped with another run — that
-    last case is what makes a new run clear the lot, with nothing to delete.
-    Entries that are not a pair of strings are dropped rather than raising:
-    this runs inside the page's one state call."""
-    try:
-        saved = json.loads(DISMISSED.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return set()
-    if not isinstance(saved, dict):
-        return set()
-    if saved.get("run") != (record or {}).get("started_at"):
-        return set()
-    out = set()
-    for pair in saved.get("findings") or []:
-        if (isinstance(pair, list) and len(pair) == 2
-                and all(isinstance(s, str) for s in pair)):
-            out.add(tuple(pair))
-    return out
-
-
-def _write_dismissed(run, pairs):
-    """The dismissed list for one pass, replaced whole. 0600 like every other
-    file in this service's state directory."""
-    tmp = DISMISSED.with_name(DISMISSED.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"run": run, "findings": sorted(pairs)}, f)
-    os.replace(tmp, DISMISSED)
-
-
-def _hide(record, pairs):
-    """Take the dismissed findings out of the record the page reads and leave
-    each category the count of what went. The record is parsed fresh on every
-    call, so this only ever edits the copy this reply carries."""
-    for cat in record.get("categories") or []:
-        if not isinstance(cat, dict):
-            continue
-        findings = cat.get("findings") or []
-        kept = [f for f in findings if (cat.get("label"), f) not in pairs]
-        cat["dismissed"] = len(findings) - len(kept)
-        cat["findings"] = kept
-
-
 def _job_fields():
     """last-run stamp, next scheduled run, and whether the last run failed —
     from hermes' own cron files (same read as the messages area). Unreadable
     files -> None fields. A run going right now shows through the audit's own
     lock probe instead, so no executions-ledger read here."""
-    try:
-        job = next((j for j in json.loads(CRON_JOBS.read_text())["jobs"]
-                    if j.get("name") == CRON_JOB), None)
-    except (OSError, ValueError, KeyError):
-        job = None
+    job = cron_job(CRON_JOB)
     return {"job_last_run_at": job.get("last_run_at") if job else None,
             "job_next_run_at": job.get("next_run_at") if job else None,
             "job_last_failed": bool(job and job.get("last_status")
@@ -230,12 +170,13 @@ def start():
     return 200, {"started": True}
 
 
-def dismiss(body):
-    """POST /api/hermes-audit/dismiss: hide one finding of the pass on screen.
-    The record is the whole check — a category still running carries no
-    findings yet, so it refuses itself, and a finding the record does not hold
-    comes from a page that has not polled since the last run. Dismissing while
-    a run goes on is allowed: a category that has landed never changes again."""
+def ignore_doctor(body):
+    """POST /api/hermes-audit/ignore-doctor: this doctor warning is expected
+    from now on. Appends the warning (the text after DOCTOR_MARK) to the
+    doctor_known list in expected.yaml — audit.py reads that list, so every
+    future run stops flagging it. The yaml edit is plain line insertion inside the
+    doctor_known block, so the file's comments survive. Only doctor findings
+    qualify: no other category has a known-list to write to."""
     label, finding = body.get("category"), body.get("finding")
     record = _run_record()
     if not record:
@@ -247,30 +188,30 @@ def dismiss(body):
     if finding not in (cat.get("findings") or []):
         return 404, {"error": "that finding is not in the pass on record — "
                               "reload the page"}
+    if DOCTOR_MARK not in finding:
+        return 400, {"error": "only doctor warnings have a known-list to "
+                              "join"}
+    warning = finding.split(DOCTOR_MARK, 1)[1]
+    entry = '  - "' + warning.replace("\\", "\\\\").replace('"', '\\"') + '"'
     try:
-        with _DISMISS_LOCK:
-            pairs = _dismissed(record)
-            pairs.add((label, finding))
-            _write_dismissed(record.get("started_at"), pairs)
+        with _KNOWN_LOCK:
+            lines = EXPECTED.read_text(encoding="utf-8").splitlines()
+            try:
+                start = lines.index("doctor_known:")
+            except ValueError:
+                return 500, {"error": "expected.yaml has no doctor_known list"}
+            end = start + 1
+            while end < len(lines) and lines[end].startswith("  - "):
+                end += 1
+            if entry not in lines[start + 1:end]:
+                lines.insert(end, entry)
+                tmp = EXPECTED.with_name(EXPECTED.name + ".tmp")
+                tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                os.replace(tmp, EXPECTED)
     except OSError as e:
-        return 500, {"error": f"could not save the dismissed list: {e}"}
-    _log({"event": "hermes_audit_dismissed", "result": f"{label}: {finding}"})
-    return 200, {"dismissed": True}
-
-
-def restore(body):
-    """POST /api/hermes-audit/restore: every finding dismissed in this pass
-    comes back. Removing the file is the whole undo — a list from an older
-    pass already reads as empty."""
-    try:
-        with _DISMISS_LOCK:
-            os.remove(DISMISSED)
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        return 500, {"error": f"could not clear the dismissed list: {e}"}
-    _log({"event": "hermes_audit_restored", "result": "dismissed findings back"})
-    return 200, {"restored": True}
+        return 500, {"error": f"could not update the known list: {e}"}
+    _log({"event": "hermes_audit_doctor_ignored", "result": warning})
+    return 200, {"ignored": True}
 
 
 def control(flag, event):
@@ -307,14 +248,10 @@ def state():
     died before audit.py seeded a record, so the pass on file is the one
     before it. The page says which of the two happened.
 
-    Dismissed findings are already out of the record here, and each category
-    carries how many of its own went, so the page draws what is left without
-    knowing the list. The cron job's stamps (last run, next run, failed) ride
-    along for the page's schedule indicators."""
+    The cron job's stamps (last run, next run, failed) ride along for the
+    page's schedule indicators."""
     running = _running()
     record = _run_record()
-    if record:
-        _hide(record, _dismissed(record))
     error = None
     if not running:
         stamp = record and (record.get("finished_at") or record.get("started_at"))
@@ -339,5 +276,4 @@ def _h_reset(body):
 HANDLERS = {"/api/hermes-audit/run": _h_run,
             "/api/hermes-audit/stop": _h_stop,
             "/api/hermes-audit/reset": _h_reset,
-            "/api/hermes-audit/dismiss": dismiss,
-            "/api/hermes-audit/restore": restore}
+            "/api/hermes-audit/ignore-doctor": ignore_doctor}

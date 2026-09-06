@@ -8,19 +8,15 @@
 Serves the static files in app/ plus GET /api/snapshot, the live data the
 dashboard page renders:
 
-- host, service and job state: hermes/iris-status/hermes-iris-status --json
+- host and service state: hermes/iris-status/hermes-iris-status --json
 - service ports: hermes/iris-status/manifest.json http probe URLs
-- job run intervals, first firing times and last runs: ~/.hermes/cron/jobs.json
 - model roles: ~/.hermes/config.yaml (iris) and
   ~/.hermes/profiles/ops/config.yaml (ops), plus the models iris
-  cron jobs run on
-  (~/.hermes/cron/jobs.json, RESEARCH_MODEL in services/mcp/research/env)
+  cron jobs run on (~/.hermes/cron/jobs.json for the agent jobs, and for the
+  script jobs the model each one pins in its own file — SCRIPT_PINS below)
 - tool catalogue: tool functions parsed out of the MCP server sources named in
   config.yaml, so a renamed or removed tool shows up instead of going stale
 - tool calls and sessions: ~/.hermes/state.db, 24-hour and 7-day windows
-
-POST /api/job/run?name=<job> starts `hermes cron run` for that job, detached;
-the jobs panel shows the outcome on later refreshes.
 
 Binds 127.0.0.1; tailscale serve forwards the tailnet here
 (30655 -> 127.0.0.1:30655).
@@ -37,7 +33,6 @@ import sqlite3
 import subprocess
 import time
 from datetime import datetime
-from urllib.parse import parse_qs, urlsplit
 
 import yaml
 
@@ -48,7 +43,6 @@ STATUS = IRIS / "hermes/iris-status/hermes-iris-status"
 MANIFEST = IRIS / "hermes/iris-status/manifest.json"
 STATE_DB = HERMES / "state.db"
 JOBS = HERMES / "cron/jobs.json"
-EXECUTIONS = HERMES / "cron/executions.db"
 CONFIG = HERMES / "config.yaml"
 OPS_CONFIG = HERMES / "profiles/ops/config.yaml"
 OPS_JOBS = HERMES / "profiles/ops/cron/jobs.json"
@@ -76,24 +70,32 @@ LINKS = [
     {"name": "actual", "url": "https://mac-mini.your-tailnet.ts.net:52737/"},
 ]
 
-WEEKDAYS = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays",
-            "Fridays", "Saturdays"]
-
-# research-batch is a no-agent script job, so jobs.json carries no model for
-# it; driver.py reads RESEARCH_MODEL out of the env file next to it
-RESEARCH_ENV = IRIS / "services/mcp/research/env"
+# A no-agent script job carries no model in jobs.json — each script names its
+# own model in its own file, and none of them follow a model switch in
+# config.yaml. The page reads every one of those pins so the models table
+# shows what each job will really run. Job name -> (role label, file, model
+# key, source key); the label is short because the role column is 8ch. A
+# script job absent here calls no model.
+SCRIPT_PINS = {
+    "research-batch": ("research",
+                           IRIS / "services/mcp/research/settings.env",
+                           "RESEARCH_MODEL", "RESEARCH_PROVIDER"),
+    "finance-daily": ("finance", IRIS / "services/actions/finance.env",
+                      "FINANCE_MODEL", "FINANCE_URL"),
+    "finance-weekly": ("finance", IRIS / "services/actions/finance.env",
+                       "FINANCE_MODEL", "FINANCE_URL"),
+    "finance-uncategorized": ("finance", IRIS / "services/actions/finance.env",
+                              "FINANCE_MODEL", "FINANCE_URL"),
+    "messages-attach-scan": ("messages",
+                             IRIS / "services/actions/messages.env",
+                             "MESSAGES_MODEL", "MESSAGES_URL"),
+}
+# A script says its source either as a provider name or as the base URL it
+# posts to, so the host names the provider. oMLX is the only local server.
+PROVIDER_HOSTS = {"openrouter.ai": "openrouter", "127.0.0.1:2130": "omlx"}
 
 
 # ---------------------------------------------------------------- gathering
-
-def _ago(seconds):
-    m = round(seconds / 60)
-    if m < 60:
-        return "%dm ago" % max(m, 1)
-    if round(m / 60) < 24:
-        return "%dh ago" % round(m / 60)
-    return "%dd ago" % round(m / 60 / 24)
-
 
 def _host(st):
     mem = int(subprocess.run(["sysctl", "-n", "hw.memsize"],
@@ -134,15 +136,27 @@ def _model_sizes():
     return sizes
 
 
-def _research_model():
-    """RESEARCH_MODEL from the research driver's env file, "" when unset."""
+def _pin(path, key):
+    """The value a script pins for key, "" when the file or the key is gone.
+    One reader for two shapes: `KEY=value` in the env files and `KEY = "value"`
+    in update_digest.py."""
     try:
-        for line in RESEARCH_ENV.read_text().splitlines():
-            if line.startswith("RESEARCH_MODEL="):
-                return line.split("=", 1)[1].strip()
+        for line in path.read_text().splitlines():
+            name, sep, value = line.partition("=")
+            if sep and name.strip() == key:
+                return value.strip().strip('"').strip("'")
     except OSError:
         pass
     return ""
+
+
+def _provider(value):
+    """A provider name passes straight through; a base URL is mapped by host.
+    An unknown host gives "", which leaves the page to infer the source from
+    whether the model sits in the local oMLX folders."""
+    if not value.startswith("http"):
+        return value
+    return PROVIDER_HOSTS.get(urlsplit(value).netloc, "")
 
 
 def _models(cfg, jobs, tests=False):
@@ -166,8 +180,7 @@ def _models(cfg, jobs, tests=False):
     # name). A provider pin alone still reroutes the default model name to
     # that provider, so it carries through to the page for the source
     # column. A profile without a jobs file has no cron rows.
-    LABELS = {"research-batch": "research", "actions-inbox-scan": "inbox",
-              "hermes-updates": "upstream"}
+    LABELS = {"actions-inbox-scan": "inbox"}
     # Every row carries the provider that will serve it, so the page merges a
     # role with a job that pins the same pair by hand. Without this the main
     # row and a job pinned to the identical provider and model draw twice.
@@ -186,9 +199,15 @@ def _models(cfg, jobs, tests=False):
         if not j["enabled"]:
             continue
         if j.get("no_agent"):
-            model = _research_model() if j["name"] == "research-batch" else ""
-        else:
-            model = j.get("model") or cron_default
+            # a script pin never folds into the shared row, even when it names
+            # the same model: it is set apart from config.yaml and stays put
+            # when that changes, which is the fact the row carries
+            pin = SCRIPT_PINS.get(j["name"])
+            model = _pin(pin[1], pin[2]) if pin else ""
+            if model:
+                named[pin[0]] = (model, _provider(_pin(pin[1], pin[3])))
+            continue
+        model = j.get("model") or cron_default
         if not model:
             continue
         if model == cron_default and not j.get("provider"):
@@ -216,7 +235,7 @@ def _models(cfg, jobs, tests=False):
 
 def _models_block(cfg):
     """Both profiles' role tables plus the local models no role uses —
-    on oMLX for manual /model switches, pi.dev (the coder), TTS/STT, or a
+    on oMLX for manual /model switches, the coder, TTS/STT, or a
     bake-off candidate, none of which config.yaml roles carry."""
     block = {
         "iris": _models(cfg, JOBS, tests=True),
@@ -263,145 +282,24 @@ def _listening(port):
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _host_entries():
+    """The Iris Host app's own child list of MCP servers."""
+    return json.loads(HOST_SERVERS.read_text())["servers"]
+
+
 def _mcp_servers():
-    """The MCP servers the Iris Studio Host app runs, read from the app's own
+    """The MCP servers the Iris Host app runs, read from the app's own
     child list so this cannot drift from what is actually running. Only the name
     and port are taken — that file also holds API keys."""
-    try:
-        entries = json.loads(HOST_SERVERS.read_text())["servers"]
-    except (OSError, ValueError, KeyError):
-        return []
     out = []
+    try:
+        entries = _host_entries()
+    except (OSError, ValueError, KeyError):
+        return out
     for entry in entries:
         up = _listening(entry["port"])
         out.append({"name": entry["name"], "port": ":%d" % entry["port"],
                     "state": "ok" if up else "bad", "detail": "up" if up else "down"})
-    return out
-
-
-def _first_run(expr):
-    """(first firing time, note): ('02:00', '') for a daily job,
-    ('02:00', 'Mondays') for a weekly one — the note carries what the
-    interval and the time don't say. ('', '') when the expr pins no fixed
-    time."""
-    parts = expr.split()
-    if len(parts) != 5:
-        return "", ""
-    minute, hour, dom, mon, dow = parts
-    minutes = _cron_field(minute, 0, 59)
-    hours = _cron_field(hour, 0, 23)
-    if not minutes or not hours:
-        return "", ""
-    first = "%02d:%02d" % (hours[0], minutes[0])
-    if dom == mon == "*" and dow != "*":
-        dows = _cron_field(dow, 0, 7)
-        if dows:
-            return first, WEEKDAYS[dows[0] % 7]
-    return first, ""
-
-
-def _cron_field(field, lo, hi):
-    """One cron field -> the values it matches (handles *, */n, lists and
-    ranges); None for forms outside that (month and weekday names)."""
-    out = set()
-    for part in field.split(","):
-        step = 1
-        if "/" in part:
-            part, s = part.split("/", 1)
-            if not s.isdigit():
-                return None
-            step = int(s)
-        if part == "*":
-            first, last = lo, hi
-        elif "-" in part:
-            a, _, b = part.partition("-")
-            if not (a.isdigit() and b.isdigit()):
-                return None
-            first, last = int(a), int(b)
-        elif part.isdigit():
-            first = last = int(part)
-        else:
-            return None
-        out.update(range(first, last + 1, step))
-    return sorted(out)
-
-
-def _every(expr):
-    """(interval between runs, runs per day) from a cron expr: ('3h', 8),
-    ('1d', 1), ('7d', 1/7). ('', None) when the expr pins a month or
-    day-of-month — there the gap is not fixed (and the one such job,
-    finance-uncategorized, only ever fires from the actions page)."""
-    parts = expr.split()
-    if len(parts) != 5:
-        return "", None
-    minute, hour, dom, mon, dow = parts
-    if dom != "*" or mon != "*":
-        return "", None
-    minutes = _cron_field(minute, 0, 59)
-    hours = _cron_field(hour, 0, 23)
-    if not minutes or not hours:
-        return "", None
-    per_day = len(minutes) * len(hours)
-    if dow != "*":
-        dows = _cron_field(dow, 0, 7)
-        if not dows:
-            return "", None
-        days = 7 / len({d % 7 for d in dows})
-        return "%dd" % round(days), per_day / days
-    gap = 24 / per_day
-    if gap >= 24 and gap % 24 == 0:
-        return "%dd" % (gap // 24), per_day
-    if gap >= 1:
-        return "%dh" % round(gap), per_day
-    return "%dm" % round(gap * 60), per_day
-
-
-def _running_jobs():
-    """Job ids whose newest attempt in hermes' executions ledger is still
-    claimed/running — a run going right now, page-started or scheduled.
-    Any read problem -> none, shown as not running."""
-    try:
-        conn = sqlite3.connect(f"file:{EXECUTIONS}?mode=ro", uri=True, timeout=1)
-        try:
-            rows = conn.execute("SELECT job_id, status FROM executions "
-                                "ORDER BY claimed_at DESC, id DESC").fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return set()
-    newest = {}
-    for job_id, status in rows:
-        newest.setdefault(job_id, status)
-    return {j for j, s in newest.items() if s in ("claimed", "running")}
-
-
-def _jobs(st):
-    # the scheduler file is the job list; iris-status supplies the state word
-    # where it watches the job, since it also checks the job's output files
-    states = {it["name"]: _STATE.get(it["state"], "bad")
-              for cat in st["categories"] for it in cat["items"]
-              if it["kind"] == "cron"}
-    running = _running_jobs()
-    out = []
-    for j in json.loads(JOBS.read_text())["jobs"]:
-        if not j["enabled"]:
-            continue
-        # interval and once schedules carry no cron expr, only a display string
-        expr = j["schedule"].get("expr")
-        if expr:
-            first, note = _first_run(expr)
-            every, per_day = _every(expr)
-        else:
-            first, note, every, per_day = "", "", "", None
-        if j["last_run_at"]:
-            last = _ago(time.time() - datetime.fromisoformat(j["last_run_at"]).timestamp())
-            state = "ok" if j["last_status"] == "ok" else "bad"
-        else:
-            last, state = "never ran", "idle"
-        out.append({"name": j["name"], "every": every, "perDay": per_day,
-                    "first": first, "note": note,
-                    "last": last, "state": states.get(j["name"], state),
-                    "running": j["id"] in running})
     return out
 
 
@@ -420,16 +318,16 @@ def _tool_names(path):
 
 
 def _host_sources():
-    """{server name: source path} for the servers the Iris Studio Host app runs.
+    """{server name: source path} for the servers the Iris Host app runs.
 
     Their hermes entries are urls, so the source cannot be read out of config.yaml
     the way a stdio entry's args give it — the app's child list is where it lives.
     """
-    try:
-        entries = json.loads(HOST_SERVERS.read_text())["servers"]
-    except (OSError, ValueError, KeyError):
-        return {}
     out = {}
+    try:
+        entries = _host_entries()
+    except (OSError, ValueError, KeyError):
+        return out
     for entry in entries:
         src = next((a for a in entry["command"] if a.endswith(".py")), "")
         if src:
@@ -531,7 +429,7 @@ def _recent_tools(db, limit):
         if len(groups) == limit:
             break
         groups.append({"server": server, "tool": tool, "n": 1,
-                       "ago": _short_age(now - ts), "cid": cid})
+                       "ago": _short_age(now - ts), "ts": ts, "cid": cid})
     ids = {g["cid"] for g in groups if g["cid"]}
     args = {}
     for (raw,) in db.execute(
@@ -546,18 +444,6 @@ def _recent_tools(db, limit):
     for g in groups:
         g["p"] = _args_note(args.get(g.pop("cid")))
     return groups
-
-
-def _run_job(name):
-    """Start `hermes cron run` for one job, detached. The run claims the job,
-    so a concurrent gateway tick cannot fire it twice."""
-    names = [j["name"] for j in json.loads(JOBS.read_text())["jobs"]]
-    if name not in names:
-        raise RuntimeError("no job named %r" % name)
-    subprocess.Popen(["hermes", "cron", "run", name],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True)
-    return "started %s" % name
 
 
 def snapshot():
@@ -585,7 +471,6 @@ def snapshot():
         "models": _models_block(cfg),
         "services": _services(st),
         "mcpServers": mcp,
-        "cron": _jobs(st),
         "links": LINKS,
         "catalog": catalog,
         "recentTools": recent_tools,
@@ -609,9 +494,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/api/snapshot":
-            fn = snapshot
             try:
-                body = json.dumps(fn()).encode()
+                body = json.dumps(snapshot()).encode()
             except Exception as e:
                 self.send_error(500, "snapshot failed: %s" % e)
                 return
@@ -625,24 +509,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.path = "/dashboard.html"
         super().do_GET()
 
-    def do_POST(self):
-        u = urlsplit(self.path)
-        if u.path == "/api/job/run":
-            name = parse_qs(u.query).get("name", [""])[0]
-            fn = lambda: _run_job(name)
-        else:
-            self.send_error(404)
-            return
-        try:
-            body = fn().encode()
-        except Exception as e:
-            self.send_error(500, "action failed: %s" % e)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
 
 
 if __name__ == "__main__":

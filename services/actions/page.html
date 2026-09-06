@@ -11,7 +11,9 @@
 <link rel="icon" href="apple-touch-icon.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <!-- Iris actions page. Everything comes from GET /api/state, polled once a
-     minute, every 3 s while a scan or a row is running; the header stamp
+     minute, every 3 s while a scan or a row is running; the poll carries
+     the hold-update flag, so only the page itself — not the menu-bar app's
+     badge poll — can hold a scheduled finance top-up. The header stamp
      counts from the last successful fetch and turns amber when a fetch
      fails, so a dead service shows as a growing amber age.
      Two layers. The glance layer is a grid of narrow area tiles — icon,
@@ -19,31 +21,38 @@
      wrong — led by a "queue" tile: the emails, messages and finance icons
      over the total of those three counts. A tile picks the view: the queue
      tile stacks emails, messages and finance (the default), an area tile
-     shows that area alone at full depth; report, research, audit and system
-     are reachable through their own tiles only. The choice sticks in
+     shows that area alone at full depth; report, research, audit, jobs and
+     system are reachable through their own tiles only. The choice sticks in
      localStorage per device.
      A strip of icon+count chips pins itself under the top bar while the
      tile grid is scrolled out of view, so switching views never needs a
      scroll back up.
-     The work layer is seven areas. Each opens with its control row, in the
+     The bar's wordmark cycles iris, dev, demo: dev swaps the app icons for
+     the design-proposal tiles, demo feeds the page canned data from the
+     service (demo.py) so every area and row state renders.
+     The work layer is eight areas. Each opens with its control row, in the
      console's own row shape: the area's header on the left — icon, name and
      one status line carrying its scan state, then its counts in their
      shortest form ("last ran 1 hr ago, 12 in inbox") — and every key of that
      area on the right, so the title row and the control row are one row.
-     Report and research are the exceptions, their headers standing above
-     their panels: report's keys pick report parts, so its rows are named
-     by hand (unsorted, report), and research has one console row per topic.
+     Report, research and jobs are the exceptions, their headers standing
+     above their panels: report has one console row per part of the daily
+     report, research one per topic, and jobs one per cron job.
      System has no control row — its keys belong to its console rows. The areas: emails (inbox-derived action sets, one
      card per set), messages (save proposals for attachments in the watched
      Apple Messages chats — one row per attachment, a destination dropdown
-     and the two-tap save and deny keys, and a hide key once a row is
-     saved), finance (the Actual Budget categorization queue —
-     one ledger card per source: proposals from email, the newest
-     uncategorized transactions, the random older ones; one row per
+     and the two-tap save and deny keys, a hide key once a row is saved,
+     and the header's green submit-all key saving every waiting row to
+     its dropdown's destination in one call), finance (two control rows — Categorize, the Actual Budget categorization queue,
+     and Oddities, one row per flagged charge with its reasons and a
+     two-tap seen key, a seen-all key in its control row;
+     the categorize block is one ledger card: proposals from email first,
+     then the newest uncategorized transactions; one row per
      transaction — a transaction proposed both from email and by the scan
-     renders once, under email, and the count line names the hidden
-     duplicates; email rows carry a two-tap hide key and the email group
-     label a hide-all key, both dropping proposals only, never
+     renders once, as the email row, and the count line names the hidden
+     duplicates; an email row carries a mail icon on its meta line and a
+     two-tap hide key, and the control row's hide-email key drops every
+     email proposal, both dropping proposals only, never
      transactions; the dropdown pre-picks the
      most likely category, the two-tap check key applies it, a checkbox —
      started indeterminate, an explicit on/off is required before the check
@@ -51,26 +60,45 @@
      chevron key opens the row's extra area: the chat link and an inline
      create-category form, the header's green submit-all key sends
      every valid row in one apply call, and a filed row keeps one hide
-     key), finance report (no cards — the part keys pick a part of
-     the daily report email, full or one component alone, and the green
-     create-preview key builds the picked part, writing nothing and sending
-     nothing; the picked key carries a blue outline, and each part's last
-     build is cached, so the part keys switch between texts with no new run),
+     key), finance report (one expandable row per part of a
+     report email — full or one component alone: the picked report's
+     cron job stamps in the heading line, so it says when that real email
+     went out and when the next is due; the header's control row holds
+     the report dropdown (daily, weekly, or a finished month) and the
+     details, categories and combine personal checkboxes every build
+     takes, greyed where the picked report ignores them; a part the
+     picked report does not carry greys its run key; the part's last
+     build and its settings in the row's meta line,
+     the run key that rebuilds it, writing nothing and sending
+     nothing, the email-draft key that puts the text on the page into the
+     hi@ Drafts folder addressed to the preset addresses, the save key
+     that writes it to the reports folder, and a
+     chevron key that opens the part's cached text; the links part is a
+     page-only preview and carries a grey "preview only" word),
      research (one expandable row per vault web-research topic: cadence and
      last successful run in the row's meta line, an amber "failed ×N" status
-     word while the driver's log shows consecutive failures, the green run
-     key that starts it now (the finished report arrives by email), and the
-     amber delete key that drops its stored report, so the next run starts
-     from scratch; a chevron key or a tap opens the row — the topic's
+     word while the driver's log shows consecutive failures, the run
+     key that starts it now (the finished report arrives by email); a
+     chevron key or a tap opens the row — the topic's
      prompt and the report's text, read from the service on the first open,
-     plus the clear key for a failure; the heading line carries the next
+     the clear key for a failure, and two amber delete keys at the end —
+     one drops its stored report, so the next run starts from scratch, one
+     drops the topic itself with its report; the heading line carries the next
      batch time, one stamp for the whole area),
      audit (a key that starts the
      deterministic Hermes audit, the running step in the header, and one card
-     per category that came back with findings — clean and dismissed
-     categories are counted in the header line and named in its tooltip),
+     per category that came back with findings — clean categories are
+     counted in the header line and named in its tooltip),
+     jobs (a table with one line per enabled hermes cron job — columns for
+     name, duration of the last 3 finished runs (newest first), when the
+     last week's failed runs happened (newest first, at most 3), last run,
+     next run, an amber status word with iris-status's detail as the row's
+     error line when something is wrong, a chevron key that opens the row's
+     extra area (the job's schedule, and its 7-day retry count with the
+     newest retry message), and a run key that starts the job now;
+     the same run the schedule makes),
      and system (a console: one row per thing —
-     the gateway, the webui — each with its own timer
+     the gateway, the two webuis — each with its own timer
      and its own keys; explanations live in the keys' tooltips, not on the
      rows).
      A failed or stale scan reads in the area's header row in amber, and as
@@ -82,14 +110,27 @@
      actions — each built from one row template with an expandable detail.
      An open email row reads the email's own text from the service and keeps
      it for the rest of the session.
-     Its head carries the chat link and one key: skip all (deny every row
-     still open) while the set has work left; hide (the card leaves the page)
-     once every row is done; retry (void the set and hand its emails back to
-     the next scan) when only failed rows are left. The emails header's
-     hide-finished key takes every finished set off the page at once; the
-     finance and messages headers have the same key for their filed
-     transactions and saved rows, and the messages one sits next to a
-     skip-all key that denies every attachment still waiting.
+     One key language on the whole page — same action, same icon, same
+     slot: the green check does it (approve, accept, save, seen, submit
+     all, seen all); the x does not (deny, skip, hide a proposal,
+     close) — amber only in a control row, where it is area-wide, gray
+     inside a card or row; the circular arrow rescans
+     (rebuilds the area's list now); play runs a thing now (a job, a
+     topic, the audit, a report part) and is green; the square stops one (the audit
+     run); the rotate arrow restarts a process; the speech bubble is chat. A control row reads circular
+     arrow or play, check, x; a row's keys end check, x. Words stay only
+     for actions no icon covers: clear, retry, accept, stop, restore,
+     delete, email draft, save a file, copy, clear failure, new category,
+     reset. The resets live in the system
+     area's saved-data rows. A set card's head carries chat, then retry
+     and accept (stuck set: void it, or take the failed rows as final),
+     or the x (skip: deny every row still open in that set).
+     Everything finished leaves its area for the done section at the
+     bottom of the view — resolved sets as cards, saved message rows and
+     filed finance rows in one card — which exists only while it has
+     something and whose clear key takes it all off the page at once.
+     Items leave on their own anyway: a set 24 h after it resolved, a row
+     at the area's next scan.
      Everything staged is untrusted content (an agent that read untrusted
      email staged it): every variable value enters the DOM through
      textContent on nodes built with document.createElement; the only
@@ -104,8 +145,8 @@
    An email set is a card whose
    sections (analysis, source emails, actions) read through icons and
    dashed rules, no labels; rows separate by spacing alone. Finance is one
-   ledger card per pick ('from email', 'last', 'random', each under a
-   small-caps label with its row count), one row per transaction, no icon
+   ledger card, one row per transaction, email proposals first with a mail
+   icon on their meta line, no icon
    column: payee over one
    gray meta line (date, account, memo), a plain mono amount, then the
    actions — a chevron key that opens the row's extra area, the category
@@ -120,7 +161,7 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --bg: #f2f4f5; --panel: #ffffff; --band: #f2f5f6; --fill2: #e6ebee;
   --card-edge: #e6eaed; --card-shadow: 0 1px 3px rgba(16,24,40,.06);
-  --ink: #3e4347; --sub: #7d8590; --faint: #a9aeb2;
+  --ink: #3e4347; --sub: #7d8590; --faint: #a9aeb2; --title: #24282c;
   --hair: #eef1f2; --rule: #e4e9eb; --track: #d9dfe4;
   --amber: #b06f2f; --green: #5f9147; --tool: #4f7fa3;
   --brand: #ff9a00; --s1: #7aa159; --s2: #9784b6; --s3: #6690b3;
@@ -135,7 +176,7 @@
     color-scheme: dark;
     --bg: #20252f; --panel: #292f3c; --band: #323949; --fill2: #3b4454;
     --card-edge: #191d27; --card-shadow: 0 1px 3px rgba(0,0,0,.3);
-    --ink: #cccac2; --sub: #8894a6; --faint: #5e6879;
+    --ink: #cccac2; --sub: #8894a6; --faint: #5e6879; --title: #e6e4dc;
     --hair: #323948; --rule: #3b4454; --track: #4a5669;
     --amber: #cf9967; --green: #82a865; --tool: #8ab4cf;
     --brand: #ff9a00; --s1: #85a171; --s2: #a293bd; --s3: #7195b5;
@@ -148,7 +189,7 @@
   color-scheme: dark;
   --bg: #20252f; --panel: #292f3c; --band: #323949; --fill2: #3b4454;
   --card-edge: #191d27; --card-shadow: 0 1px 3px rgba(0,0,0,.3);
-  --ink: #cccac2; --sub: #8894a6; --faint: #5e6879;
+  --ink: #cccac2; --sub: #8894a6; --faint: #5e6879; --title: #e6e4dc;
   --hair: #323948; --rule: #3b4454; --track: #4a5669;
   --amber: #cf9967; --green: #82a865; --tool: #8ab4cf;
   --brand: #ff9a00; --s1: #85a171; --s2: #a293bd; --s3: #7195b5;
@@ -229,6 +270,7 @@ body {
 .atile.research { --ac: var(--tool); }
 .atile.messages { --ac: var(--s3); }
 .atile.audit { --ac: var(--s2); }
+.atile.jobs { --ac: var(--s1); }
 .atile.system { --ac: var(--sub); }
 
 /* the strip: icon+count chips pinned under the bar while the tile grid is
@@ -259,12 +301,12 @@ body {
 .schip.research { --ac: var(--tool); }
 .schip.messages { --ac: var(--s3); }
 .schip.audit { --ac: var(--s2); }
+.schip.jobs { --ac: var(--s1); }
 .schip.system { --ac: var(--sub); }
 
 /* ---- area headers: slim rows, no longer sticky (the strip orients) -------
    A header row is an icon, a name and one status line. It rides the area's
-   control row, so the header and the keys are one row; report's header
-   stands on its own above its two named rows. */
+   control row, so the header and the keys are one row. */
 
 .area { margin-bottom: 30px;
   /* a strip tap scrolls here; leave room for the bar plus the strip */
@@ -273,17 +315,13 @@ body {
 .area-top { display: flex; align-items: baseline; flex-wrap: wrap;
   gap: 8px 12px; margin: 0 2px 12px; padding-bottom: 6px;
   border-bottom: 1px solid var(--rule); }
-.area-h { margin: 0; font-size: 13.5px; font-weight: 650;
-  letter-spacing: 0; text-transform: capitalize; }
-.a-ic { display: grid; place-items: center; align-self: center; flex: none; }
+/* a step darker and heavier than the body text, so the title stands out
+   without color; the icon next to it takes the same ink */
+.area-h { margin: 0; font-size: 16px; font-weight: 700;
+  letter-spacing: 0; text-transform: capitalize; color: var(--title); }
+.a-ic { display: grid; place-items: center; align-self: center; flex: none;
+  color: var(--title); }
 .a-ic .svg-icon { width: 14px; height: 14px; stroke-width: 2.2; }
-.a-ic.emails { color: var(--brand); }
-.a-ic.finance { color: var(--s1); }
-.a-ic.report { color: var(--green); }
-.a-ic.research { color: var(--tool); }
-.a-ic.messages { color: var(--s3); }
-.a-ic.audit { color: var(--s2); }
-.a-ic.system { color: var(--sub); }
 
 /* the system console: one row per thing, its own timer and keys per row.
    Every area's control row is built from the same parts, so both read as one
@@ -295,11 +333,17 @@ body {
 .upstat { color: var(--sub); font-size: 12.5px; flex: 1; min-width: 150px; }
 .upkeys { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;
   justify-content: flex-end; }
+/* the label over the system area's second console */
+.syslabel { margin: 14px 2px 6px; }
 
 /* a control row carrying the area's header in place of a name: icon, name
    and status line on its left, that area's keys on its right */
 .upitem > .area-top { flex: 1 1 auto; min-width: 0;
   margin: 0; padding: 0; border-bottom: 0; }
+/* that row sits flat on the page, no box: a white box means data, so the
+   header must not look like one more card */
+.panel:has(> .upitem > .area-top) { border: 0; border-radius: 0;
+  background: transparent; box-shadow: none; margin-bottom: 6px; }
 /* the row holds nothing but this line now, so it wraps rather than cutting
    off: the counts ride its end, and a cut-off count is worth nothing */
 .a-info { font-size: 12.5px; letter-spacing: 0.02em; color: var(--sub);
@@ -391,9 +435,6 @@ body {
 .blk.settled > .b-main .b-title { color: var(--sub); }
 .blk.settled > .b-main .bicon, .blk.settled > .b-main .verb { opacity: .55; }
 .blk.gone { opacity: .65; }
-.gone-tag { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em;
-  text-transform: uppercase; color: var(--faint); border: 1px solid var(--faint);
-  border-radius: 4px; padding: 0 4px; }
 
 /* ---- icon column: one blue for every block glyph ------------------------- */
 
@@ -415,7 +456,7 @@ body {
 .stat.bad { color: var(--amber); }
 .stat.wrk { color: var(--tool); }
 
-/* ---- approve/deny: soft tint chips --------------------------------------- */
+/* ---- the row chips: the green check and the gray rest ------------------- */
 
 .sqs { display: flex; gap: 8px; flex: none; }
 .sq { display: grid; place-items: center; width: 46px; height: 40px;
@@ -427,16 +468,16 @@ body {
   color: var(--green); }
 .sq.yes:not(:disabled) {
   border-color: color-mix(in srgb, var(--green) 40%, var(--bg)); }
-.sq.non { background: color-mix(in srgb, var(--amber) 12%, var(--bg));
-  color: var(--amber); }
-.sq.non:not(:disabled) {
-  border-color: color-mix(in srgb, var(--amber) 40%, var(--bg)); }
+/* the gray chip: every key in a row that is not the green check — deny,
+   hide a proposal, close, restart. Same gray as the .key text keys */
+.sq.gray { background: var(--fill2); color: var(--sub); }
+.sq.gray:not(:disabled) { border-color: var(--track); }
 .sq:disabled { opacity: .4; cursor: default; }
 @media (hover: hover) {
   .sq.yes:enabled:hover:not(.armed) {
     background: color-mix(in srgb, var(--green) 22%, var(--bg)); }
-  .sq.non:enabled:hover:not(.armed) {
-    background: color-mix(in srgb, var(--amber) 20%, var(--bg)); }
+  .sq.gray:enabled:hover:not(.armed) {
+    background: var(--rule); color: var(--ink); }
 }
 /* armed keys keep their normal look — the pulsing ring alone says armed */
 /* the open_email row's link chip: same shape as the approve/deny chips */
@@ -502,8 +543,8 @@ a.sq.go { color: var(--tool); text-decoration: none;
   .key:not(:disabled):hover { background: var(--rule); color: var(--ink); }
 }
 .key:disabled { opacity: .5; cursor: default; }
-/* the green key: submit all — the only green text key, same tint family
-   as the .sq.yes chips */
+/* the green key: submit all, seen all and every play key — same tint
+   family as the .sq.yes chips, the finance accept included */
 .key.green { background: color-mix(in srgb, var(--green) 13%, var(--bg));
   color: var(--green); }
 .key.green:not(:disabled) {
@@ -513,7 +554,8 @@ a.sq.go { color: var(--tool); text-decoration: none;
     background: color-mix(in srgb, var(--green) 22%, var(--bg));
     color: var(--green); }
 }
-/* the amber key: the audit's reset — same tint family as the .sq.non chips */
+/* the amber key: a control row's x, delete, reset — the same amber as a bad
+   status word */
 .key.amber { background: color-mix(in srgb, var(--amber) 13%, var(--bg));
   color: var(--amber); }
 .key.amber:not(:disabled) {
@@ -523,10 +565,12 @@ a.sq.go { color: var(--tool); text-decoration: none;
     background: color-mix(in srgb, var(--amber) 22%, var(--bg));
     color: var(--amber); }
 }
-/* the picked report part: a blue outline, the page's color for the thing in
-   hand — the panel shows this part and the create-preview key builds it */
-.key.part.picked { border-color: var(--tool); color: var(--tool); }
 .key .svg-icon { width: 12px; height: 12px; }
+/* a hidden key stays hidden: the class's display would otherwise win */
+.key[hidden] { display: none; }
+/* icon-only keys: the chevron key's inset and icon size */
+.key.ico { padding-left: 10px; padding-right: 10px; }
+.key.ico .svg-icon { width: 14px; height: 14px; }
 .key.rawbtn { font-family: var(--mono); text-transform: none;
   letter-spacing: 0; font-size: 11px; min-height: 26px; padding: 3px 10px;
   background: none; color: var(--faint); border-color: transparent; }
@@ -541,17 +585,8 @@ a.sq.go { color: var(--tool); text-decoration: none;
   accent-color: var(--green); cursor: pointer; }
 .key.rulechk input:indeterminate { accent-color: var(--amber); }
 
-/* ---- finance: one ledger card per pick ------------------------------------ */
+/* ---- finance: one ledger card ---------------------------------------------- */
 
-/* each pick's label sits above its card, outside the panel — the page's
-   small-caps label style, same as a row's verb and the head's meta text.
-   Flex so the email group's hide-all key can ride the label line, pushed
-   to the card's right edge */
-.fin-label { color: var(--sub); font-size: 11px; font-weight: 650;
-  letter-spacing: 0.09em; text-transform: uppercase;
-  margin: 0 0 8px 4px; display: flex; align-items: center; }
-.fin-label .key { margin-left: auto; }
-.panel + .fin-label { margin-top: 10px; }
 .fin .p-head { cursor: default; }   /* the scan-failed panel keeps a head */
 .fin .c-body { padding: 10px 0 4px; }
 .fin .c-body .b-err { padding: 0 var(--pad-x); }
@@ -574,9 +609,11 @@ a.sq.go { color: var(--tool); text-decoration: none;
    row's extra area, so it sits with them; solid, darker while open */
 .exp { padding-left: 10px; padding-right: 10px; }
 .exp .svg-icon { width: 14px; height: 14px; transition: transform .18s; }
-.fin-item.open .exp, .blk.open .exp { background: var(--rule); color: var(--ink); }
+.fin-item.open .exp, .blk.open .exp,
+.jobrow.open .exp { background: var(--rule); color: var(--ink); }
 .fin-item.open .exp .svg-icon,
-.blk.open .exp .svg-icon { transform: rotate(180deg); }
+.blk.open .exp .svg-icon,
+.jobrow.open .exp .svg-icon { transform: rotate(180deg); }
 
 /* the extra area the chevron opens: one line of chat + the new-category
    chip, and the create form on its own full-width line */
@@ -611,13 +648,54 @@ a.sq.go { color: var(--tool); text-decoration: none;
 .rawtext.report { max-height: none; padding: 2px var(--pad-x) 4px;
   color: var(--ink); }
 
-/* the research rows are item rows in one panel, so they keep the console's
-   dashed rules between them; an open row's prompt and report each sit in
-   their own banded block (the .json block's look), so the two texts read
-   as separate things */
+/* the report and research rows are item rows in one panel, so they keep the
+   console's dashed rules between them; an open research row's prompt and
+   report each sit in their own banded block (the .json block's look), so the
+   two texts read as separate things */
+#cards-finance-report .blk + .blk,
 #cards-research .blk + .blk { border-top: 1px dashed var(--rule); }
+
+/* the jobs table: the container owns the tracks and the rows subgrid onto
+   them, so the columns align across rows and size to their widest cell;
+   only the name column truncates. Cells reuse the page's row classes
+   (b-title, b-meta, stat), so the text-size levels come along. */
+#jobs-grid { display: grid; column-gap: 1.8ch; padding: 2px 0;
+  grid-template-columns: minmax(0,1fr) repeat(7, max-content); }
+.jobrow { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  align-items: center; padding: 8px var(--pad-x); }
+.jobrow + .jobrow { border-top: 1px dashed var(--rule); }
+/* a bad row's detail takes a full-width line under the cells and wraps */
+.jobrow .b-err { grid-column: 1 / -1; white-space: normal;
+  overflow-wrap: anywhere; }
+/* the failed cell's items color by age: amber inside a day, green inside
+   three days, the cell's own gray beyond that */
+.jobrow .bad { color: var(--amber); }
+.jobrow .ok { color: var(--green); }
+/* the extra area the chevron opens: the job's schedule and its newest
+   retry, a full-width line under the cells like a bad row's detail */
+.jobrow .jmore { display: none; }
+.jobrow.open .jmore { display: block; grid-column: 1 / -1;
+  padding-top: 4px; }
+.jmore div { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 460px) {
+  /* the took, failed and next-run columns give way so names stay whole on
+     a phone; the chevron's extra area still carries the retry detail */
+  #jobs-grid { grid-template-columns: minmax(0,1fr) repeat(4, max-content); }
+  .jobrow .jnext, .jobrow .jtook, .jobrow .jfail { display: none; }
+}
+#cards-finance-report .rawtext,
 #cards-research .rawtext { background: var(--band); border-radius: 10px;
   padding: 8px 12px; }
+
+/* a report row's description is a sentence, not a label, so its meta lines
+   wrap instead of ending in an ellipsis; the row's keys drop to their own
+   line when the text column would otherwise be squeezed to nothing */
+#cards-finance-report .b-meta { white-space: normal; }
+/* the second meta line is the build stamp, never the description, so it takes
+   the quieter tone and the two lines read apart at a glance */
+#cards-finance-report .b-meta + .b-meta { color: var(--faint); }
+#cards-finance-report .b-main { flex-wrap: wrap; }
+#cards-finance-report .b-text { min-width: 200px; }
 
 /* the category dropdown: filled like the .key chips. Custom chevron so it
    keeps a 12px inset from the right edge (the native arrow hugs the corner
@@ -665,12 +743,10 @@ html[data-text="m"] .key, html[data-text="m"] .catsel { font-size: 12.5px;
 html[data-text="m"] .fin-keys .catsel { width: 185px; }
 html[data-text="m"] .sq { width: 52px; height: 45px; }
 html[data-text="m"] .sq .svg-icon { width: 19px; height: 19px; }
-html[data-text="m"] .area-h { font-size: 15.5px; }
+html[data-text="m"] .area-h { font-size: 18px; }
 html[data-text="m"] .a-ic .svg-icon { width: 16px; height: 16px; }
 html[data-text="m"] .stat { font-size: 12px; }
 html[data-text="m"] .verb { font-size: 9.5px; }
-html[data-text="m"] .fin-label { font-size: 12px; }
-html[data-text="m"] .gone-tag { font-size: 10.5px; }
 html[data-text="m"] .fk { font-size: 12px; }
 html[data-text="m"] .bicon .svg-icon { width: 22px; height: 22px; }
 html[data-text="m"] .tilebox { width: 46px; }
@@ -699,12 +775,10 @@ html[data-text="l"] .key, html[data-text="l"] .catsel { font-size: 14px;
 html[data-text="l"] .fin-keys .catsel { width: 200px; }
 html[data-text="l"] .sq { width: 58px; height: 50px; }
 html[data-text="l"] .sq .svg-icon { width: 21px; height: 21px; }
-html[data-text="l"] .area-h { font-size: 17.5px; }
+html[data-text="l"] .area-h { font-size: 20px; }
 html[data-text="l"] .a-ic .svg-icon { width: 18px; height: 18px; }
 html[data-text="l"] .stat { font-size: 13.5px; }
 html[data-text="l"] .verb { font-size: 10.5px; }
-html[data-text="l"] .fin-label { font-size: 13px; }
-html[data-text="l"] .gone-tag { font-size: 11.5px; }
 html[data-text="l"] .fk { font-size: 13.5px; }
 html[data-text="l"] .bicon .svg-icon { width: 24px; height: 24px; }
 html[data-text="l"] .tilebox { width: 50px; }
@@ -734,7 +808,7 @@ html[data-text="l"] .upstat { font-size: 16px; }
      wins and a busy key drops its green for the blue in-flight chip -->
 <link rel="stylesheet" href="/tap-feedback.css">
 </head>
-<body data-bar="actions">
+<body data-bar="actions" data-demo>
 
 <header class="bar"></header>
 
@@ -744,12 +818,13 @@ html[data-text="l"] .upstat { font-size: 16px; }
   <div class="tiles" id="tiles"></div>
   <!-- an area: a panel of control rows, then its cards. The first row is the
        area's own header — icon, name and status line — with that area's keys
-       on its right, so the title row and the control row are one row. Report
-       and research are the exceptions, their headers standing above their
-       panels: report's rows are named by hand, because its keys pick
-       report parts, which do not divide the way an area's do, and research
-       has one console row per topic. System has no control panel — its keys
-       belong to its console rows, one timer and one key each. -->
+       on its right, so the title row and the control row are one row. Report,
+       research and jobs are the exceptions, their headers standing above
+       their panels: report's rows are named by hand, because its keys pick
+       report parts, which do not divide the way an area's do, research has
+       one console row per topic, and jobs one per cron job. System has no
+       control panel — its keys belong to its console rows, one timer and one
+       key each. -->
   <section class="area" id="area-emails">
     <section class="panel">
       <div class="upitem">
@@ -759,11 +834,10 @@ html[data-text="l"] .upstat { font-size: 16px; }
           <span class="a-info"><span id="job-line"></span><span id="emails-count"></span></span>
         </div>
         <span class="upkeys">
-          <button class="key" id="emails-hide" disabled>hide finished</button>
-          <button class="key" id="rescan"
-            title="scan the inbox now — the same run the scheduled job makes">rescan</button>
-          <button class="key amber" id="reset-all"
-            title="forget every reviewed email — the next scan starts from scratch">reset</button>
+          <button class="key ico" data-icon="refresh-cw" id="rescan" aria-label="rescan"
+            title="scan the inbox now — the same run the scheduled job makes"></button>
+          <button class="key ico amber" data-icon="x" id="emails-skip" disabled
+            aria-label="skip all"></button>
         </span>
       </div>
     </section>
@@ -779,12 +853,12 @@ html[data-text="l"] .upstat { font-size: 16px; }
           <span class="a-info" id="msg-job-line"></span>
         </div>
         <span class="upkeys">
-          <button class="key" id="msg-hide" disabled>hide finished</button>
-          <button class="key" id="msg-skip" disabled>skip all</button>
-          <button class="key" id="msg-rescan"
-            title="scan the watched chats now — the same run the scheduled job makes">rescan</button>
-          <button class="key amber" id="msg-reset"
-            title="clear the list and forget every scanned attachment — the next scan re-proposes whatever is still in the window">reset</button>
+          <button class="key ico" data-icon="refresh-cw" id="msg-rescan" aria-label="rescan"
+            title="scan the watched chats now — the same run the scheduled job makes"></button>
+          <button class="key ico green" data-icon="check" id="msg-submit-all" disabled
+            aria-label="submit all"></button>
+          <button class="key ico amber" data-icon="x" id="msg-skip" disabled
+            aria-label="skip all"></button>
         </span>
       </div>
     </section>
@@ -796,65 +870,93 @@ html[data-text="l"] .upstat { font-size: 16px; }
       <div class="upitem">
         <div class="area-top" id="head-finance">
           <span class="a-ic finance"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
-          <h2 class="area-h">finance</h2>
+          <h2 class="area-h">Categorize</h2>
           <span class="a-info"><span id="fin-job-line"></span><span id="fin-count"></span></span>
         </div>
         <span class="upkeys">
-          <button class="key" id="fin-hide" disabled>hide finished</button>
-          <button class="key green" id="fin-submit-all" disabled>submit all</button>
-          <button class="key" id="fin-rescan"
-            title="download a fresh budget copy, then rebuild the queue">rescan</button>
-          <a class="key" href="https://mac-mini.your-tailnet.ts.net:52737/budget"
-            target="_blank" rel="noopener"
-            title="open the budget in Actual">budget</a>
-          <a class="key" href="https://mac-mini.your-tailnet.ts.net:52737/rules"
-            target="_blank" rel="noopener"
-            title="undo a wrong payee rule">rules</a>
+          <button class="key ico" data-icon="refresh-cw" id="fin-rescan" aria-label="rescan"
+            title="download a fresh budget copy, then rebuild the queue"></button>
+          <button class="key ico green" data-icon="check" id="fin-submit-all" disabled
+            aria-label="submit all"></button>
+          <button class="key ico amber" data-icon="x" id="fin-email-hide" hidden
+            aria-label="hide every email proposal"
+            title="hide every email proposal — the transactions stay uncategorized"></button>
         </span>
       </div>
     </section>
     <div id="cards-finance"></div>
-  </section>
-
-  <section class="area" id="area-report">
-    <div class="area-top" id="head-report">
-      <span class="a-ic report"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M8 18v-1"/><path d="M12 18v-6"/><path d="M16 18v-3"/></svg></span>
-      <h2 class="area-h">finance report</h2>
-      <span class="a-info" id="rep-line"></span>
-    </div>
     <section class="panel">
       <div class="upitem">
-        <span class="upname">unsorted</span>
+        <div class="area-top" id="head-oddities">
+          <span class="a-ic finance"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></span>
+          <h2 class="area-h">Oddities</h2>
+        </div>
         <span class="upkeys">
-          <button class="key part" data-part="summary">summary</button>
-          <button class="key part" data-part="cashflow">cash flow</button>
-          <button class="key part" data-part="lenses">lenses</button>
-          <button class="key part" data-part="odd">odd</button>
-          <button class="key part" data-part="new">new</button>
-          <button class="key part" data-part="links">links</button>
-        </span>
-      </div>
-      <div class="upitem">
-        <span class="upname">report</span>
-        <span class="upkeys">
-          <button class="key part picked" data-part="full">full</button>
-          <button class="key green" id="rep-build"
-            title="build the picked part of the daily report and show it here — it writes nothing and sends no mail">create preview</button>
+          <button class="key ico green" data-icon="check" id="fin-odd-seen-all" disabled
+            aria-label="seen all" title="take every oddity off the page for good"></button>
         </span>
       </div>
     </section>
+    <div id="cards-oddities"></div>
+  </section>
+
+  <!-- done: everything finished in the view — resolved sets, saved message
+       rows, filed finance rows — at the bottom. Exists only while it has
+       something; its one key clears it all -->
+  <section class="area off" id="area-done">
+    <section class="panel">
+      <div class="upitem">
+        <div class="area-top" id="head-done">
+          <span class="a-ic done"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <h2 class="area-h">done</h2>
+          <span class="a-info" id="done-line"></span>
+        </div>
+        <span class="upkeys">
+          <button class="key" id="done-clear"
+            title="take everything here off the page now — it leaves on its own anyway: a set 24 hours after it resolved, a row at the next scan">clear</button>
+        </span>
+      </div>
+    </section>
+    <div id="cards-done"></div>
+  </section>
+
+  <section class="area" id="area-report">
+    <section class="panel">
+      <div class="upitem">
+        <div class="area-top" id="head-report">
+          <span class="a-ic report"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M8 18v-1"/><path d="M12 18v-6"/><path d="M16 18v-3"/></svg></span>
+          <h2 class="area-h">finance report</h2>
+          <span class="a-info" id="rep-line"></span>
+        </div>
+        <!-- the settings every build takes: filled and read by the report
+             script's code below -->
+        <span class="upkeys">
+          <select class="catsel" id="rep-report"
+            title="the report to build: the daily email, the weekly email, or a finished month"></select>
+          <label class="key rulechk"
+            title="income sub-lines, history rows under every row, debt payoff and interest math"><input type="checkbox" id="rep-detailed">details</label>
+          <label class="key rulechk"
+            title="every group's categories under its group row"><input type="checkbox" id="rep-categories">categories</label>
+          <label class="key rulechk"
+            title="the per-person categories print as one Personal and one Personal Subscription row per group"><input type="checkbox" id="rep-personal">combine personal</label>
+        </span>
+      </div>
+    </section>
+    <!-- one expandable row per report part, rendered from the state: the
+         part's name and last build on the left, its run, draft and save
+         keys on the right; open shows the part's cached text -->
     <div id="cards-finance-report"></div>
   </section>
 
   <section class="area" id="area-research">
     <div class="area-top" id="head-research">
       <span class="a-ic research"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10.065 12.493-6.18 1.318a.934.934 0 0 1-1.108-.702l-.537-2.15a1.07 1.07 0 0 1 .691-1.265l13.504-4.44"/><path d="m13.56 11.747 4.332-.924"/><path d="m16 21-3.105-6.21"/><path d="M16.485 5.94a2 2 0 0 1 1.455-2.425l1.09-.272a1 1 0 0 1 1.212.727l1.515 6.06a1 1 0 0 1-.727 1.213l-1.09.272a2 2 0 0 1-2.425-1.455z"/><path d="m6.158 8.633 1.114 4.456"/><path d="m8 21 3.105-6.21"/><circle cx="12" cy="13" r="2"/></svg></span>
-      <h2 class="area-h">research</h2>
+      <h2 class="area-h">web research</h2>
       <span class="a-info" id="res-line"></span>
     </div>
     <!-- one expandable row per topic, rendered from the state: its name and
-         state on the left, its run and delete keys on the right; open shows
-         the prompt and the report -->
+         state on the left, its run key on the right; open shows the prompt,
+         the report and the two delete keys -->
     <div id="cards-research"></div>
   </section>
 
@@ -867,19 +969,27 @@ html[data-text="l"] .upstat { font-size: 16px; }
           <span class="a-info"><span id="aud-line"></span><span id="aud-clean"></span></span>
         </div>
         <span class="upkeys">
-          <button class="key green" id="aud-run"
-            title="run the full Hermes audit — it can take an hour">run</button>
-          <button class="key" id="aud-stop" disabled
-            title="stop the run in progress; it writes no report">stop</button>
-          <button class="key" id="aud-restore" disabled
-            title="show every finding dismissed in this pass again">restore</button>
-          <button class="key amber" id="aud-reset"
-            title="forget every pass so far, so the next run is a first pass">reset</button>
+          <button class="key ico green" data-icon="play" id="aud-run" aria-label="run"
+            title="run the full Hermes audit — it can take an hour"></button>
+          <button class="key ico" data-icon="square" id="aud-stop" disabled aria-label="stop"
+            title="stop the run in progress; it writes no report"></button>
         </span>
       </div>
     </section>
     <div class="a-detail" id="aud-detail" hidden></div>
     <div id="cards-audit"></div>
+  </section>
+
+  <section class="area" id="area-jobs">
+    <div class="area-top" id="head-jobs">
+      <span class="a-ic jobs"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
+      <h2 class="area-h">jobs</h2>
+      <span class="a-info" id="jobs-line"></span>
+    </div>
+    <!-- a table with one line per enabled hermes cron job, rendered from
+         the state: name, interval, time of day, last run, next run, state
+         word, run key -->
+    <div id="cards-jobs"></div>
   </section>
 
   <section class="area" id="area-system">
@@ -894,16 +1004,45 @@ html[data-text="l"] .upstat { font-size: 16px; }
         <span class="upname">gateway</span>
         <span class="upstat" id="sys-gateway-line"></span>
         <span class="upkeys">
-          <button class="key" id="sys-gateway"
-            title="restart the hermes gateway, so it reloads the tool-approvals plugin — a chat in flight is dropped">restart</button>
+          <button class="key ico" data-icon="rotate-cw" id="sys-gateway" aria-label="restart"
+            title="restart the hermes gateway, so it reloads the tool-approvals plugin — a chat in flight is dropped"></button>
         </span>
       </div>
       <div class="upitem">
         <span class="upname">webui</span>
         <span class="upstat" id="sys-webui-line"></span>
         <span class="upkeys">
-          <button class="key" id="sys-webui"
-            title="restart the hermes webui, so it reloads the tool-approvals plugin — an open chat page needs a reload">restart</button>
+          <button class="key ico" data-icon="rotate-cw" id="sys-webui" aria-label="restart"
+            title="restart the hermes webui, so it reloads the tool-approvals plugin — an open chat page needs a reload"></button>
+        </span>
+      </div>
+    </section>
+    <!-- saved data: one row per area whose reset wipes everything it saved,
+         so its next run is a first run -->
+    <div class="fk syslabel">saved data</div>
+    <section class="panel">
+      <div class="upitem">
+        <span class="upname">emails</span>
+        <span class="upstat">clears every saved set, decision and scan memory — the next scan runs as a first run</span>
+        <span class="upkeys">
+          <button class="key amber" id="emails-reset"
+            title="forget every reviewed email — the next scan starts from scratch">reset</button>
+        </span>
+      </div>
+      <div class="upitem">
+        <span class="upname">messages</span>
+        <span class="upstat">clears every saved card and scan memory — the next scan runs as a first run</span>
+        <span class="upkeys">
+          <button class="key amber" id="msg-reset"
+            title="clear the list and forget every scanned attachment — the next scan re-proposes whatever is still in the window">reset</button>
+        </span>
+      </div>
+      <div class="upitem">
+        <span class="upname">audit</span>
+        <span class="upstat">clears every pass and baseline — the next run is a first pass</span>
+        <span class="upkeys">
+          <button class="key amber" id="aud-reset"
+            title="forget every pass so far, so the next run is a first pass">reset</button>
         </span>
       </div>
     </section>
@@ -911,9 +1050,9 @@ html[data-text="l"] .upstat { font-size: 16px; }
 
 </main>
 
+<script src="/armed-button.js"></script>
 <script src="/bar.js"></script>
 <script src="/dev-bar.js"></script>
-<script src="/armed-button.js"></script>
 <script>
 "use strict";
 
@@ -938,6 +1077,7 @@ const ICONS = {
   "calendar": '<path d="M8 2v3"/> <path d="M16 2v3"/> <rect x="3" y="3" width="18" height="18" rx="2"/> <path d="M3 9h18"/>',
   "mail": '<path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7"/> <rect x="2" y="4" width="20" height="16" rx="2"/>',
   "mail-open": '<path d="M21.2 8.4c.5.38.8.97.8 1.6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 .8-1.6l8-6a2 2 0 0 1 2.4 0l8 6Z"/> <path d="m22 10-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 10"/>',
+  "bell-plus": '<path d="M10.268 21a2 2 0 0 0 3.464 0"/> <path d="M15 8h6"/> <path d="M18 5v6"/> <path d="M20.002 14.464a9 9 0 0 0 .738.863A1 1 0 0 1 20 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 8.75-5.332"/>',
   "check": '<path d="M20 6 9 17l-5-5"/>',
   "x": '<path d="M18 6 6 18"/> <path d="m6 6 12 12"/>',
   "chevron-down": '<path d="m6 9 6 6 6-6"/>',
@@ -945,7 +1085,6 @@ const ICONS = {
   "sparkle": '<path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/>',
   "calendar-search": '<path d="M16 2v3"/> <path d="M21 10.69V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h7.25"/> <path d="m22 21-1.875-1.875"/> <path d="M3 9h18"/> <path d="M8 2v3"/> <circle cx="18" cy="17" r="3"/>',
   "tag": '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/> <circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
-  "wrench": '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/>',
   "clock": '<circle cx="12" cy="12" r="10"/> <path d="M12 6v6l4 2"/>',
   "external-link": '<path d="M15 3h6v6"/> <path d="M10 14 21 3"/> <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   "map-pin": '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/> <circle cx="12" cy="10" r="3"/>',
@@ -957,6 +1096,12 @@ const ICONS = {
   "clipboard-check": '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/> <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/> <path d="m9 14 2 2 4-4"/>',
   "server": '<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/> <rect width="20" height="8" x="2" y="14" rx="2" ry="2"/> <line x1="6" x2="6.01" y1="6" y2="6"/> <line x1="6" x2="6.01" y1="18" y2="18"/>',
   "hourglass": '<path d="M5 22h14"/> <path d="M5 2h14"/> <path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/> <path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
+  "wrench": '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/>',
+  "bell-off": '<path d="M10.268 21a2 2 0 0 0 3.464 0"/> <path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/> <path d="m2 2 20 20"/> <path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/>',
+  "rotate-cw": '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/> <path d="M21 3v5h-5"/>',
+  "refresh-cw": '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/> <path d="M21 3v5h-5"/> <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/> <path d="M8 16H3v5"/>',
+  "play": '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
+  "square": '<rect width="18" height="18" x="3" y="3" rx="2"/>',
 };
 
 function icon(name) {
@@ -969,12 +1114,12 @@ function icon(name) {
 }
 
 /* the icon column: bare glyph, optional verb text */
-function tileEl(mcp, name, verb) {
+function tileEl(name, verb) {
   const box = el("span", "tilebox");
-  const ic = el("span", "bicon " + mcp);
+  const ic = el("span", "bicon");
   ic.append(icon(name));
   box.append(ic);
-  if (verb) box.append(el("span", "verb " + mcp, verb));
+  if (verb) box.append(el("span", "verb", verb));
   return box;
 }
 
@@ -984,8 +1129,8 @@ function tileEl(mcp, name, verb) {
    page tiles, the chevron row, theme key, text-size keys; tick() reports the
    status text next to the wordmark via barStatus() */
 
-/* the budget and rules keys leave for the Actual web UI */
-for (const a of document.querySelectorAll(".upitem a.key")) a.append(icon("external-link"));
+/* the control rows' icon-only keys name their icon in the markup */
+for (const b of document.querySelectorAll(".key[data-icon]")) b.append(icon(b.dataset.icon));
 
 /* ---- confirm taps ---------------------------------------------------------
    Every confirm key is wired through armedButton (/armed-button.js, shared
@@ -1159,13 +1304,14 @@ function linkEl(u) {
    provides it. */
 
 const KINDS = {
-  create_event: { mcp: "cal", icon: "calendar", verb: "new" },
-  update_event: { mcp: "cal", icon: "calendar", verb: "update" },
-  delete_event: { mcp: "cal", icon: "calendar", verb: "delete" },
-  archive_email: { mcp: "mail", icon: "mail", verb: "archive" },
-  mirror_kick: { mcp: "cal", icon: "calendar", verb: "mirror" },
-  open_email: { mcp: "mail", icon: "mail-open", verb: "open" },
-  categorize_transaction: { mcp: "fin", icon: "tag", verb: "categorize" },
+  create_event: { icon: "calendar", verb: "new" },
+  update_event: { icon: "calendar", verb: "update" },
+  delete_event: { icon: "calendar", verb: "delete" },
+  archive_email: { icon: "mail", verb: "archive" },
+  mirror_kick: { icon: "calendar", verb: "mirror" },
+  open_email: { icon: "mail-open", verb: "open" },
+  categorize_transaction: { icon: "tag", verb: "categorize" },
+  create_reminder: { icon: "bell-plus", verb: "remind" },
 };
 
 const UPDATE_NAMES = { new_title: "title", start: "start", end: "end",
@@ -1291,6 +1437,20 @@ const BUILD = {
       fields: [],
     };
   },
+  create_reminder(a) {
+    // the reminder as it will read in Apple Reminders: name as the title,
+    // list and due date on the meta lines, notes in the detail
+    const fields = [["list", a.list]];
+    if (a.due) fields.push(["due", fmtDay(a.due)]);
+    if (a.notes) fields.push(["notes", a.notes, true]);
+    return {
+      title: a.name,
+      meta: [[null, a.list + " list"]],
+      when: a.due ? [["calendar", fmtDay(a.due)]] : undefined,
+      links: urlsIn(a.notes),
+      fields,
+    };
+  },
   mirror_kick(a) {
     // calendar names + dots live in the description line, not the title
     const m = el("span");
@@ -1309,6 +1469,17 @@ const BUILD = {
 };
 
 /* ---- fetch loop ---------------------------------------------------------- */
+
+/* demo mode (the bar's [demo] state, dev-bar.js): every same-origin /api
+   call goes to the service's /demo prefix, which answers with canned data
+   (demo.py) and takes writes as 202 no-ops — so every area renders with
+   nothing real behind it. Read once at start: the bar reloads the page on
+   the way in and out */
+if (document.documentElement.dataset.mode === "demo") {
+  const real = window.fetch.bind(window);
+  window.fetch = (url, opts) =>
+    real(typeof url === "string" && url.startsWith("/api/") ? "/demo" + url : url, opts);
+}
 
 let DATA = null, checkedAt = null, failed = false, pageError = "";
 
@@ -1361,13 +1532,14 @@ function pacePoll() {
       || Date.now() - scanStartingAt < 30000
       || Date.now() - msgScanStartingAt < 30000
       || Date.now() - finScanStartingAt < 30000 || auditStarting()
-      || repBuilding() || Date.now() - repStartingAt < 30000) {
+      || repBuilding() || Date.now() - repStartingAt < 30000
+      || jobsStarted.size) {
     fastPoll = setTimeout(poll, 3000);
     return;
   }
   /* an audit pass runs for up to an hour and moves a step every few minutes,
      so it polls slower than a scan: three seconds for an hour would be
-     thousands of homeserver syncs and budget reads for a line that barely
+     thousands of budget reads for a line that barely
      moves */
   if (auditRunning()) fastPoll = setTimeout(poll, 10000);
 }
@@ -1422,8 +1594,10 @@ function jobLine() {
 }
 
 /* the finance heading row's scan status: last-run time, a running indicator
-   with elapsed time, and a failed marker when the last run failed — the
-   stamps cover finance-daily and finance-uncategorized together */
+   with elapsed time, and a failed marker when the last run failed — all
+   from the finance-uncategorized job alone (finance-daily only mails the
+   report) — plus the batch's age, so a list held while the page sat open
+   reads as old, not fresh */
 function finJobLine() {
   if (!DATA) return;
   const fin = DATA.finance;
@@ -1443,6 +1617,8 @@ function finJobLine() {
   const parts = [];
   if (fin.job_last_failed) parts.push(el("span", "bad", "last run failed"), ", ");
   parts.push(lastRan);
+  const savedAt = fin.saved_at ? Date.parse(fin.saved_at) : null;
+  if (savedAt) parts.push(`, list ${ago(Date.now() - savedAt)} old`);
   $("#fin-job-line").replaceChildren(...parts);
 }
 
@@ -1559,8 +1735,13 @@ function tick() {
   resLine();
   /* a research row's "started" note expires ten seconds after the tap */
   if (resStarted.size) renderResearch();
+  /* the run keys stay grey for the build's starting window */
+  if (Date.now() - repStartingAt < 30000) renderReport();
   msgJobLine();
   auditLine();
+  jobsLine();
+  /* a job row's "started" note expires thirty seconds after the tap */
+  if (jobsStarted.size) renderJobs();
   sysLine();
   renderTiles();  /* the tiles' shorthand ages move between polls too */
 }
@@ -1572,6 +1753,7 @@ function renderMeta() {
   resLine();
   msgJobLine();
   auditLine();
+  jobsLine();
   sysLine();
   /* the counts ride the end of each area's scan line, in their shortest
      form. 0 emails means "no provably-complete inbox listing yet", so that
@@ -1596,31 +1778,26 @@ function renderMeta() {
       `categorize ask out to ${a.to_addr} — ${a.items} item${a.items === 1 ? "" : "s"}, sent ${fmtDay(a.created_at.slice(0, 10))}`
     ).join("\n");
   else fc.removeAttribute("title");
-  /* hide finished: takes every finished set off the page at once, so it is
-     out while no card is finished */
-  const doneSets = DATA.emails.sets.filter(isResolved).length;
-  const clear = $("#emails-hide");
-  clear.disabled = !doneSets || armedButtonBusy("emails-hide-finished");
-  clear.title = doneSets
-    ? `take ${doneSets} finished set${doneSets === 1 ? "" : "s"} off the page`
-    : "no finished set on the page";
-  /* hide finished: takes every filed transaction off the page at once, out
-     while none is filed */
-  const doneFin = DATA.finance.cards.filter(finSettled).length;
-  const finHide = $("#fin-hide");
-  finHide.disabled = !doneFin || armedButtonBusy("fin-hide-finished");
-  finHide.title = doneFin
-    ? `take ${doneFin} filed transaction${doneFin === 1 ? "" : "s"} off the page`
-    : "no filed transaction on the page";
-  /* hide finished: takes every saved message row off the page at once, out
-     while no row is saved */
-  const doneMsgs = DATA.messages.cards.filter(
-    (c) => c.status === "success").length;
-  const msgHide = $("#msg-hide");
-  msgHide.disabled = !doneMsgs || armedButtonBusy("messages-hide-finished");
-  msgHide.title = doneMsgs
-    ? `take ${doneMsgs} saved row${doneMsgs === 1 ? "" : "s"} off the page`
-    : "no saved row on the page";
+  /* skip all: denies every row still open across every set — the same deny
+     the per-set skip key runs, over the whole area */
+  const openRows = DATA.emails.sets.reduce(
+    (n, s) => n + s.rows.filter((r) => r.status === "pending").length, 0);
+  const skipAllKey = $("#emails-skip");
+  skipAllKey.disabled = !openRows || armedButtonBusy("emails-skip-all");
+  skipAllKey.title = openRows
+    ? `deny ${openRows} row${openRows === 1 ? "" : "s"} — nothing runs`
+    : "no row is waiting for a decision";
+  /* hide email: drops every email proposal not executing, shown only while
+     one is pending */
+  const emailFin = DATA.finance.cards.filter(
+    (c) => c.pick === "email" && c.status === "pending").length;
+  const emailHide = $("#fin-email-hide");
+  emailHide.hidden = !emailFin;
+  emailHide.disabled = armedButtonBusy("fin-email-hide-all");
+  /* seen all: every oddity off the page for good, out while none is listed */
+  const oddCount = (DATA.finance.oddities || []).length;
+  const oddAll = $("#fin-odd-seen-all");
+  oddAll.disabled = !oddCount || armedButtonBusy("fin-odd-seen-all");
   /* skip all: denies every message card still waiting — a denied attachment
      never comes back, so the key says so */
   const openMsgs = DATA.messages.cards.filter(
@@ -1636,7 +1813,6 @@ function renderMeta() {
   $("#rescan").disabled = scanning() || Date.now() - scanStartingAt < 30000;
   $("#fin-rescan").disabled = finScanning() || Date.now() - finScanStartingAt < 30000;
   $("#msg-rescan").disabled = msgScanning() || Date.now() - msgScanStartingAt < 30000;
-  $("#rep-build").disabled = repBuilding() || Date.now() - repStartingAt < 30000;
   /* one run at a time: run and reset are out while a run holds the lock,
      stop only exists while one does (reset would be refused by audit.py
      anyway — the key is grey so the tap never has to fail) */
@@ -1645,6 +1821,7 @@ function renderMeta() {
   $("#aud-reset").disabled = busy;
   $("#aud-stop").disabled = !auditRunning();
   syncSubmitAll();
+  syncMsgSubmitAll();
 }
 
 /* ---- glance tiles + view -------------------------------------------------- */
@@ -1655,14 +1832,16 @@ function renderMeta() {
    localStorage, per device and per
    origin, like the bar's prefs. The strip mirrors the tiles as icon+count
    chips pinned under the bar while the grid is scrolled out of view.
-   Counts: emails/finance/messages count the rows waiting for a decision,
-   audit the findings left. The queue tile counts emails + messages +
-   finance only. */
+   Counts: emails counts the sets holding a row waiting for a decision — a
+   set is decided as a unit, and the menu-bar badge counts it the same way;
+   finance and messages count the rows waiting for a decision, audit the
+   findings left. The queue tile
+   counts emails + messages + finance only. */
 
 localStorage.removeItem("iris-areas-collapsed");   /* the old collapse UI's store */
 const VIEW_KEY = "iris-actions-view";
 const AREA_IDS = ["emails", "messages", "finance", "report", "research",
-                  "audit", "system"];
+                  "audit", "jobs", "system"];
 /* the areas the queue view stacks, its tile sums and its icons name */
 const QUEUE_IDS = ["emails", "messages", "finance"];
 let view = localStorage.getItem(VIEW_KEY);
@@ -1688,13 +1867,14 @@ function tinyDur(ms) {
 
 /* the last run's age behind a check glyph (done), the time to the
    scheduled run behind an hourglass (waiting); a missing stamp drops its
-   half. Returns a fragment — the tile status line takes nodes as well as
+   half. The two glyphs separate the halves, so no dot between them.
+   Returns a fragment — the tile status line takes nodes as well as
    strings. */
 function prevNext(prevAt, nextAt) {
   const f = document.createDocumentFragment();
   if (prevAt)
     f.append(icon("check"), " " + tinyDur(Date.now() - Date.parse(prevAt)));
-  if (prevAt && nextAt) f.append(" · ");
+  if (prevAt && nextAt) f.append(" ");
   if (nextAt)
     f.append(icon("hourglass"), " " + tinyDur(Date.parse(nextAt) - Date.now()));
   return f;
@@ -1707,8 +1887,8 @@ function prevNext(prevAt, nextAt) {
 const TILES = {
   emails: {
     name: "emails", icon: "mail",
-    count: () => DATA.emails.sets.reduce(
-      (n, s) => n + s.rows.filter((r) => r.status === "pending").length, 0),
+    count: () => DATA.emails.sets.filter(
+      (s) => s.rows.some((r) => r.status === "pending")).length,
     short() {
       const em = DATA.emails;
       if (em.job_running_since) return [["wrk", "scanning"]];
@@ -1722,7 +1902,8 @@ const TILES = {
   finance: {
     name: "finance", icon: "dollar-sign",
     count: () => finVisibleCards()
-      .filter((c) => c.status === "pending").length,
+      .filter((c) => c.status === "pending").length
+      + (DATA.finance.oddities || []).length,
     short() {
       const fin = DATA.finance;
       if (fin.job_running_since) return [["wrk", "scanning"]];
@@ -1737,6 +1918,7 @@ const TILES = {
     short() {
       const fr = DATA.finance_report;
       if (fr.building_since) return [["wrk", "building"]];
+      if (fr.drafting_since) return [["wrk", "drafting"]];
       /* the newest cached part stands for the area; no build yet says
          nothing — an empty line instead of a "no preview" placeholder */
       const reps = Object.values(fr.reports);
@@ -1749,7 +1931,7 @@ const TILES = {
     },
   },
   research: {
-    name: "research", icon: "telescope",
+    name: "web research", icon: "telescope",
     count: () => null,
     short() {
       const r = DATA.research;
@@ -1796,6 +1978,19 @@ const TILES = {
       return [["", prevNext(a.run.finished_at, a.job_next_run_at)]];
     },
   },
+  jobs: {
+    /* the count is jobs needing attention, like every other tile's count —
+       zero means nothing to do; the day's run count rides the status line
+       and gives way to the amber word while something is failing */
+    name: "jobs", icon: "clock",
+    count: () => DATA.jobs.jobs.filter((j) => j.state === "bad").length,
+    short() {
+      if (DATA.jobs.error) return [["bad", "unreadable"]];
+      if (DATA.jobs.jobs.some((j) => j.state === "bad"))
+        return [["bad", "failing"]];
+      return [["", `${DATA.jobs.runs_24h} runs today`]];
+    },
+  },
   system: {
     name: "system", icon: "server",
     count: () => null,
@@ -1806,9 +2001,6 @@ const TILES = {
     },
   },
 };
-const TILE_ICONS = { emails: "mail",
-  finance: "dollar-sign", report: "file-chart", research: "telescope",
-  messages: "message-square", audit: "clipboard-check", system: "server" };
 
 function renderTiles() {
   if (!DATA) return;
@@ -1820,8 +2012,8 @@ function renderTiles() {
   const mk = (id, name, count, short) => {
     const b = el("button", "atile " + id + (view === id ? " sel" : ""));
     const trow = el("span", "trow");
-    if (id === "queue") trow.append(...QUEUE_IDS.map((q) => icon(TILE_ICONS[q])));
-    else trow.append(icon(TILE_ICONS[id]), el("span", "nm", name));
+    if (id === "queue") trow.append(...QUEUE_IDS.map((q) => icon(TILES[q].icon)));
+    else trow.append(icon(TILES[id].icon), el("span", "nm", name));
     b.append(trow);
     const bot = el("span", "tbot");
     if (count != null) bot.append(el("span", "tcount", String(count)));
@@ -1848,8 +2040,8 @@ function renderStrip(counts, total) {
   const mk = (id, count, warn) => {
     const c = el("button", "schip " + id + (view === id ? " on" : ""));
     c.setAttribute("aria-label", id);
-    if (id === "queue") c.append(...QUEUE_IDS.map((q) => icon(TILE_ICONS[q])));
-    else c.append(icon(TILE_ICONS[id]));
+    if (id === "queue") c.append(...QUEUE_IDS.map((q) => icon(TILES[q].icon)));
+    else c.append(icon(TILES[id].icon));
     if (count != null) c.append(el("span", "n", String(count)));
     if (warn) c.append(el("span", "warndot"));
     c.addEventListener("click", () => setView(id, true));
@@ -1866,6 +2058,7 @@ function applyView() {
   for (const id of AREA_IDS)
     document.getElementById("area-" + id).classList.toggle("off",
       view === "queue" ? !QUEUE_IDS.includes(id) : view !== id);
+  renderDone();
 }
 
 /* scroll: a strip tap lands the view's first area at the top; a tile tap
@@ -1888,7 +2081,7 @@ new IntersectionObserver(([entry]) =>
 
 async function poll() {
   try {
-    const r = await fetch("/api/state");
+    const r = await fetch("/api/state?hold-update");
     if (!r.ok) throw new Error(r.status);
     DATA = await r.json();
     checkedAt = Date.now();
@@ -1912,6 +2105,7 @@ async function poll() {
     if (resSnapshot() !== renderedResearch) renderResearch();
     if (msgSnapshot() !== renderedMessages) renderMessages();
     if (auditSnapshot() !== renderedAudit) renderAudit();
+    if (jobsSnapshot() !== renderedJobs) renderJobs();
     pageError = "";
     pacePoll();
   } catch (e) {
@@ -1929,12 +2123,12 @@ const isResolved = (s) => s.state === "resolved";
 const isClosed = (s) =>
   cardClosed.has(s.id) ? cardClosed.get(s.id) : isResolved(s);
 
-/* whole rows toggle open/closed — but not when the click lands on a button
-   or link, and not when the user just dragged to select text. render is the
-   area's own rebuild; the email rows leave it unset */
+/* whole rows toggle open/closed — but not when the click lands on a button,
+   link or form field, and not when the user just dragged to select text.
+   render is the area's own rebuild; the email rows leave it unset */
 function toggler(key, render) {
   return (e) => {
-    if (e.target.closest("button, a")) return;
+    if (e.target.closest("button, a, input, select, textarea")) return;
     const sel = window.getSelection();
     if (sel && sel.type === "Range") return;
     if (openBlocks.has(key)) openBlocks.delete(key); else openBlocks.add(key);
@@ -2014,8 +2208,9 @@ function rowEl(o) {
 /* the chat chip — the set card's "hand to iris" link and the finance row's
    "discuss" link are the same key */
 function chatKey(prompt, title) {
-  const chat = el("a", "key chatkey");
-  chat.append(icon("message-square"), "chat");
+  const chat = el("a", "key ico chatkey");
+  chat.append(icon("message-square"));
+  chat.setAttribute("aria-label", "chat");
   chat.href = WEBUI + "?prompt=" + encodeURIComponent(prompt);
   chat.target = "_blank";
   chat.rel = "noopener";
@@ -2114,7 +2309,7 @@ function analysisEl(s) {
     ["proposed " + fullDate(s.created_at), by.job, by.session]
       .filter(Boolean).join(" · ")));
   return rowEl({ key: s.id + "/analysis", cls: "blk",
-                 tile: tileEl("neut", "sparkle"),
+                 tile: tileEl("sparkle"),
                  meta: [{ clamp: s.rationale }], expand: detail });
 }
 
@@ -2124,12 +2319,11 @@ function analysisEl(s) {
    {state: loading|ok|error, text} */
 const mailBody = new Map();
 
-async function fetchMailBody(setId, emailId) {
+async function fetchMailBody(emailId) {
   mailBody.set(emailId, { state: "loading" });
   let entry;
   try {
-    const q = `set_id=${encodeURIComponent(setId)}`
-      + `&email_id=${encodeURIComponent(emailId)}`;
+    const q = `email_id=${encodeURIComponent(emailId)}`;
     const res = await fetch("/api/emails/body?" + q);
     const out = await res.json().catch(() => ({}));
     entry = res.ok
@@ -2146,7 +2340,7 @@ async function fetchMailBody(setId, emailId) {
    email renders in two places (based on + an archive card) */
 function emailEl(s, m, ctx) {
   const side = el("div", "b-side");
-  if (m.gone) side.append(el("span", "gone-tag", "left inbox"));
+  if (m.gone) side.append(el("span", "stat", "left inbox"));
   if (!isIris(m.id)) {
     const go = el("a", "golink");
     go.href = webmailUrl(m);
@@ -2164,7 +2358,7 @@ function emailEl(s, m, ctx) {
   const key = s.id + "/" + m.id + (ctx ? "/" + ctx : "");
   if (openBlocks.has(key)) {
     const got = mailBody.get(m.id);
-    if (got === undefined) fetchMailBody(s.id, m.id);
+    if (got === undefined) fetchMailBody(m.id);
     if (got && got.state === "ok")
       detail.append(el("pre", "rawtext", got.text));
     else if (got && got.state === "error")
@@ -2174,7 +2368,7 @@ function emailEl(s, m, ctx) {
   }
   return rowEl({ key,
                  cls: "blk" + (m.gone ? " gone" : ""),
-                 tile: tileEl("mail", "mail"),
+                 tile: tileEl("mail"),
                  title: fromName(m.from),
                  meta: [m.subject,
                         [["calendar", shortDate(m.receivedAt)],
@@ -2213,7 +2407,7 @@ function actionEl(s, r) {
     const yes = el("button", "sq yes");
     yes.append(icon("check"));
     yes.setAttribute("aria-label", r.kind === "open_email" ? "done" : "approve");
-    const non = el("button", "sq non");
+    const non = el("button", "sq gray");
     non.append(icon("x"));
     non.setAttribute("aria-label", "deny");
     if (anyWorking()) {
@@ -2283,8 +2477,7 @@ function actionEl(s, r) {
 
   return rowEl({
     key, cls: "blk" + (SETTLED.includes(r.status) ? " settled" : ""),
-    tile: tileEl(kind.mcp,
-                 (r.suggestion && SUGGESTION_TILE[r.kind]) || kind.icon,
+    tile: tileEl((r.suggestion && SUGGESTION_TILE[r.kind]) || kind.icon,
                  kind.verb),
     title: c.title, done: r.status === "success",
     meta, why: r.suggestion, links: c.links,
@@ -2319,29 +2512,21 @@ function cardEl(s) {
      prefilled composer, never auto-sends — email-action-links.md) */
   head.append(chatKey(`Let's handle actions-inbox set ${s.id} by hand: ${s.title}`,
                       "hand this set to iris in chat"));
-  /* the set's own key, right of chat — one per state of the set:
-     rows still open -> skip all (deny each of them);
-     finished -> hide (the card leaves the page);
+  /* the set's keys, right of chat, in the page's key order — per state of
+     the set:
      stuck (pending, nothing waiting, a row failed) -> retry, which voids the
-     set and drops its emails from the ledger; the next scan then proposes
-     them again, and the heading says so until one runs. Hiding a stuck set
-     instead would leave a pending record no trim ever clears and no page
-     ever shows. */
+     set and drops its emails from the ledger (the next scan then proposes
+     them again, and the heading says so until one runs), then accept,
+     which settles the set with its failed rows as final and takes it off
+     the page — the choice is the user's;
+     rows still open -> the x (deny each of them);
+     finished -> no key: the card sits in the done section. */
   const open = s.rows.filter((r) => r.status === "pending").length;
-  if (isResolved(s)) {
-    const hide = el("button", "key", "hide");
-    hide.title = "take this finished set off the page";
-    armedButton(hide, s.id + "/hide",
-                () => post("/api/emails/hide", { set_id: s.id }));
-    head.append(hide);
-  } else if (open) {
-    const skip = el("button", "key", "skip all");
-    skip.title = `deny ${open} row${open === 1 ? "" : "s"} — nothing runs`;
-    armedButton(skip, s.id + "/skip", () => skipAll(s));
-    head.append(skip);
-  } else {
+  const running = s.rows.some((r) => r.status === "in_progress");
+  const stuck = !isResolved(s) && !open;
+  if (stuck) {
     const again = el("button", "key", "retry");
-    if (s.rows.some((r) => r.status === "in_progress")) {
+    if (running) {
       again.disabled = true;
       again.title = "a row is running";
     } else {
@@ -2349,6 +2534,21 @@ function cardEl(s) {
       armedButton(again, s.id + "/retry", () => retrySet(s));
     }
     head.append(again);
+  }
+  if (stuck && !running) {
+    const accept = el("button", "key", "accept");
+    accept.title = "accept the failed rows as final and take the set off the page";
+    armedButton(accept, s.id + "/hide",
+                () => post("/api/emails/hide", { set_id: s.id }));
+    head.append(accept);
+  }
+  if (open) {
+    const skip = el("button", "key ico");
+    skip.append(icon("x"));
+    skip.setAttribute("aria-label", "skip");
+    skip.title = `deny ${open} row${open === 1 ? "" : "s"} — nothing runs`;
+    armedButton(skip, s.id + "/skip", () => skipAll(s));
+    head.append(skip);
   }
   head.addEventListener("click", (e) => {
     if (e.target.closest("button, a")) return;
@@ -2370,19 +2570,19 @@ function renderEmails() {
   renderedEmails = JSON.stringify(DATA.emails.sets);
   const host = $("#cards-emails");
   host.replaceChildren();
-  const order = [...DATA.emails.sets].sort((a, b) => isResolved(a) - isResolved(b));
-  for (const s of order) host.append(cardEl(s));
+  for (const s of DATA.emails.sets) if (!isResolved(s)) host.append(cardEl(s));
   if (!host.children.length) host.append(emptyEl("inbox is clear"));
+  renderDone();
 }
 
 
 /* ---- finance cards -------------------------------------------------------- */
-/* One ledger card per pick — email proposals under 'from email', the
-   scan's 'latest' pick under 'last', its 'random' pick under 'random' —
-   one row per proposed transaction (finVisibleCards dedupes the copies a
-   transaction proposed by two sources has). Email rows carry a two-tap
-   hide key, the email label a hide-all key — both drop proposals through
-   the skip endpoint, never transactions. The
+/* One ledger card — email proposals first, then the scan's 'latest'
+   pick — one row per proposed transaction (finVisibleCards dedupes the
+   copies a transaction proposed by two sources has). An email row carries
+   a mail icon on its meta line and a two-tap hide key; the control row's
+   hide-email key drops every email proposal — both go through the skip
+   endpoint and drop proposals, never transactions. The
    dropdown pre-picks
    the most likely category (the check key stays disabled until a category
    is picked); the two-tap check key writes it — arm, then confirm, same as
@@ -2417,7 +2617,8 @@ const finSettled = (c) => c.status === "done" || c.status === "already_handled";
 /* the job stamps move every poll, so the rebuild compare covers the cards
    and picker data only — the heading row repaints separately */
 const finSnapshot = () => JSON.stringify(
-  [DATA.finance.cards, DATA.finance.error, DATA.finance.categories]);
+  [DATA.finance.cards, DATA.finance.error, DATA.finance.categories,
+   DATA.finance.oddities]);
 
 /* One visible row per transaction: the email copy wins over the scan's
    (and the first of two email copies wins), the hidden copies stay in
@@ -2427,7 +2628,7 @@ const finSnapshot = () => JSON.stringify(
 function finVisibleCards() {
   const seen = new Set();
   const out = [];
-  for (const pick of ["email", "latest", "random"]) {
+  for (const pick of ["email", "latest"]) {
     for (const c of DATA.finance.cards) {
       if (c.pick !== pick || seen.has(c.transaction_id)) continue;
       seen.add(c.transaction_id);
@@ -2562,7 +2763,7 @@ function finCardEl(c) {
         : finApprox.get(id) === true
           ? `set '${cat}' and teach the payee rule for about this amount`
           : `set '${cat}' and teach the payee rule`;
-      armedButton(apply, id + "/apply", () => finApply([{
+      armedButton(apply, id + "/apply", () => applyRows(FIN_AREA, [{
         transaction_id: id, category: cat,
         update_rule: finRule.get(id) === true,
         approx: finRule.get(id) === true && finApprox.get(id) === true }]));
@@ -2572,7 +2773,7 @@ function finCardEl(c) {
        uncategorized, so a duplicate's scan row shows again at once and
        a future scan can still pick it */
     if (c.pick === "email") {
-      const non = el("button", "sq non");
+      const non = el("button", "sq gray");
       non.append(icon("x"));
       non.setAttribute("aria-label", "hide");
       non.title = "hide this proposal — the transaction stays uncategorized";
@@ -2629,8 +2830,8 @@ function finCardEl(c) {
        so it carries only validity, not the busy guard */
     ok.disabled = !valid();
     armedButton(ok, id + "/create", () => finCreateCategory(c, grp.value, inp.value.trim()));
-    /* the X closes the form on one tap — no confirmation */
-    const xbtn = el("button", "sq non");
+    /* the x closes the form on one tap — no confirmation */
+    const xbtn = el("button", "sq gray");
     xbtn.append(icon("x"));
     xbtn.setAttribute("aria-label", "close");
     xbtn.title = "close";
@@ -2641,16 +2842,6 @@ function finCardEl(c) {
     });
     form.append(grp, inp, xbtn, ok);
     more.append(form);
-  } else if (finSettled(c)) {
-    /* a filed row keeps one key: hide, the same key a saved message row and
-       a finished email set get. The transaction is out of the uncategorized
-       queue, so no scan proposes it again */
-    keys = el("span", "fin-keys");
-    const hide = el("button", "key", "hide");
-    hide.title = "take this filed transaction off the page";
-    armedButton(hide, id + "/hide-filed",
-                () => post("/api/finance/hide", { transaction_id: id }));
-    keys.append(hide);
   }
   /* done items carry no status line — the title's check says it */
   return rowEl({
@@ -2658,16 +2849,41 @@ function finCardEl(c) {
     mainCls: "fin-main",
     title: c.payee || "(no payee)",
     done: c.status === "done" || c.status === "already_handled",
-    meta: [[pd(c.date).d.toLocaleDateString("en-US",
-             { month: "short", day: "numeric" }), c.account, c.notes,
-            c.pick === "email" && c.source && c.source.subject
-              ? `mail: ${c.source.subject}` : null]
-           .filter(Boolean).join(" · ")],
+    meta: [[[c.pick === "email" ? "mail" : null,
+             [pd(c.date).d.toLocaleDateString("en-US",
+                { month: "short", day: "numeric" }), c.account, c.notes,
+              c.pick === "email" && c.source && c.source.subject
+                ? c.source.subject : null]
+             .filter(Boolean).join(" · ")]]],
     err: c.status === "failed" ? c.status_text : "",
     amount: amtEl(c.amount),
     status: (c.status === "in_progress" || c.status === "failed")
       ? STAT[c.status] : null,
     keys, expand: more,
+  });
+}
+
+/* one oddities row: the charge, its reasons one per meta line, and the seen
+   key — the same two-tap green check key as the inbox action rows. Seen
+   takes the row off for good: the service moves the id from the queue to
+   its seen file */
+function finOddEl(o) {
+  const keys = el("span", "fin-keys");
+  const seen = el("button", "sq yes");
+  seen.append(icon("check"));
+  seen.setAttribute("aria-label", "seen");
+  seen.title = "seen: take this oddity off the page for good";
+  armedButton(seen, o.transaction_id + "/odd-seen",
+              () => post("/api/finance/odd-seen", { transaction_id: o.transaction_id }));
+  keys.append(seen);
+  return rowEl({
+    cls: "fin-item", mainCls: "fin-main",
+    title: o.payee || "(no payee)",
+    meta: [[pd(o.date).d.toLocaleDateString("en-US",
+             { month: "short", day: "numeric" }), o.account].join(" · "),
+           ...o.reasons],
+    amount: amtEl(o.amount),
+    keys,
   });
 }
 
@@ -2678,69 +2894,176 @@ function renderFinance() {
   const host = $("#cards-finance");
   host.replaceChildren();
   if (DATA.finance.error) host.append(scanErrorEl(DATA.finance.error));
-  /* one ledger card per pick — transactions proposed from a mail first,
-     then the newest uncategorized, then the random older ones — each under
-     a small-caps label with its row count. Inside a card, completed rows
-     sink to the bottom, order otherwise unchanged */
-  const visible = finVisibleCards();
-  for (const [pick, label] of [["email", "from email"], ["latest", "last"],
-                               ["random", "random"]]) {
-    const cards = visible.filter((c) => c.pick === pick)
-      .sort((a, b) => finSettled(a) - finSettled(b));
-    if (!cards.length) continue;
-    const lab = el("div", "fin-label", `${label} ${cards.length}`);
-    if (pick === "email") {
-      /* hide all: drops every email card — the transactions stay
-         uncategorized, and a duplicate's scan row shows again at once */
-      const hide = el("button", "key", "hide all");
-      hide.title = "hide every email proposal — the transactions stay uncategorized";
-      armedButton(hide, "fin-email-hide-all",
-        () => post("/api/finance/skip", { pick: "email" }));
-      lab.append(hide);
-    }
-    host.append(lab);
+  /* the oddities block under its own control row: one row per flagged
+     transaction, newest first, until its seen key */
+  const oddHost = $("#cards-oddities");
+  oddHost.replaceChildren();
+  const odd = DATA.finance.oddities || [];
+  if (odd.length) {
     const p = el("section", "panel card fin");
-    for (const c of cards) p.append(finCardEl(c));
+    for (const o of odd) p.append(finOddEl(o));
+    oddHost.append(p);
+  } else {
+    oddHost.append(emptyEl("nothing odd this week"));
+  }
+  /* one ledger card — transactions proposed from a mail first, then the
+     newest uncategorized; filed rows sit in the done section instead */
+  const visible = finVisibleCards().filter((c) => !finSettled(c));
+  if (visible.length) {
+    const p = el("section", "panel card fin");
+    for (const c of visible) p.append(finCardEl(c));
     host.append(p);
   }
-  if (!host.children.length) host.append(emptyEl("everything is categorized"));
+  if (!visible.length && !DATA.finance.error)
+    host.append(emptyEl("everything is categorized"));
+  renderDone();
 }
 
 
 /* ---- finance report ------------------------------------------------------- */
-/* No cards: the part keys pick a part of the daily report — full is
-   the whole body, the rest one component alone. The create-preview key runs
-   the report script in write-free mode for the picked part (--section), and
-   the service keeps each part's last build in memory, so a part key switches
-   the panel to that part's cached text with no new run.
-   The panel is the picked part's text alone — the build that produced it, or
-   the failure that replaced it. The heading row carries the state; a build
-   takes a minute or two (seconds for the no-LLM parts), so the key greys and
-   the heading counts it up, naming the part under way. */
+/* One expandable row per part of a report email — full is the whole
+   body, the rest one component alone. The header's control row carries the
+   four settings every build takes: the report dropdown (daily, weekly, or
+   a finished month back to the first month the data covers — the script's
+   --weekly and --month), the details
+   checkbox (income sub-lines, history rows, debt payoff and interest math —
+   the script's --detailed), the categories checkbox (every group's
+   per-category rows — --categories) and the combine personal checkbox (the
+   per-person categories print as one Personal and one Personal Subscription
+   row per group — --combine-personal). Each report carries its own parts
+   (REP_PARTS_OF, the script's PARTS): a row outside the picked report's
+   parts greys its run key. The daily has no cash-flow rows, so its three
+   checkboxes grey; the weekly always prints the category rows, so its
+   categories checkbox shows checked and greyed. The row carries the part's last build
+   time and the settings it was built with in its meta line, and three keys:
+   a chevron (or a tap on the row) opens the part's cached text, or the
+   error that replaced it; the run key rebuilds it; draft puts the
+   text on the page — never a fresh build — into the hi@ Drafts folder,
+   addressed to finance.env's REPORT_MAIL_TO, and sends nothing; save
+   writes it to the reports folder as a markdown file named by the month
+   or build date and the settings (2026-08-finance-details-cashflow.md);
+   the meta line says when the header's combination was last saved, read
+   from that folder. Run and save are
+   two-tap keys like every other confirm key; a draft is harmless, so one
+   tap. The run key starts the report script the way the finance-daily and
+   finance-weekly cron jobs run it, with one difference: --preview is the
+   script's write-free mode, so nothing is written and nothing mailed —
+   the text lands here only. One build or draft at a time (the service
+   refuses a second), so every run and draft key greys while one is going;
+   a build takes a minute or two (seconds for the no-LLM parts), and the
+   building row carries a green "building" word while the heading counts
+   it up. The links part is a page-only preview — no email carries it —
+   and carries a grey "preview only" word. Nothing is stored on disk, so a
+   service restart drops every cached part. */
 
 let renderedReport = null;
 
-/* the part keys, both rows: the picked look and the taps are the same on all
-   of them */
-const REP_KEYS = document.querySelectorAll("#area-report .key.part");
+/* the parts, in row order: full, then the same names as PARTS in
+   finance_jobs.py plus its page-only part */
+const REP_PARTS = ["full", "summary", "cashflow", "check", "outliers", "new",
+                   "links"];
 
-/* heading labels per part name */
-const REP_LABELS = { full: "full report", summary: "summary",
-                     cashflow: "cash flow", lenses: "lenses", odd: "odd",
-                     new: "new transactions", links: "links" };
+/* the parts each report carries, in email order — the same lists as PARTS
+   in finance_jobs.py; a finished month is "month". full and links belong
+   to every report */
+const REP_PARTS_OF = {
+  daily: ["summary", "check", "outliers", "new"],
+  weekly: ["summary", "cashflow"],
+  month: ["summary", "cashflow", "outliers"],
+};
 
-/* the picked part key: what the panel shows and what the create-preview key builds */
-let repPicked = "full";
+/* row titles per part name */
+const REP_LABELS = { full: "full", summary: "summary", cashflow: "cash flow",
+                     check: "check", outliers: "outliers", new: "new",
+                     links: "links" };
+
+/* the "what and why" under each row's title */
+const REP_DESCR = {
+  full: "the whole email in one build",
+  summary: "a few sentences from the model",
+  cashflow: "projection, spending by category, how long the balance lasts, debts",
+  check: "uncategorized money and file problems, only when there is something to say",
+  outliers: "suspect charges of the last 7 days or the picked month",
+  new: "every on-budget transaction of the last 7 days, by account",
+  links: "the email's three closing links",
+};
+
+/* links is a page-only preview — no email carries it (PAGE_ONLY in
+   finance_jobs.py) */
+const REP_PAGE_ONLY = new Set(["links"]);
+
+/* the header controls' values, read at each run tap; report is daily,
+   weekly, or a finished YYYY-MM month */
+const repSettings = { report: "daily", detailed: false, categories: false,
+                      combine_personal: false };
+
+/* daily, weekly, or month — the REP_PARTS_OF key of the picked report */
+const repKind = () =>
+  repSettings.report in REP_PARTS_OF ? repSettings.report : "month";
+
+/* whether a part is in the picked report's email */
+const repCarries = (part) =>
+  part === "full" || REP_PAGE_ONLY.has(part)
+  || REP_PARTS_OF[repKind()].includes(part);
+
+/* the report dropdown's choices: daily and weekly first, then every
+   finished month back to the first month the data covers (the service's
+   first_month) */
+function repReportChoices() {
+  const out = [["daily", "daily"], ["weekly", "weekly"]];
+  const first = (DATA && DATA.finance_report.first_month) || "";
+  const now = new Date();
+  for (let i = 1; i < 60; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const label = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    if (first && label < first) break;
+    out.push([label, label]);
+  }
+  return out;
+}
+
+/* the header controls: the report dropdown refills from the state on each
+   render (the first month is the service's), keeping its pick; the
+   checkboxes record their value, and grey where the picked report ignores
+   them — the daily has no cash-flow rows, so all three; the weekly always
+   prints the category rows, so its categories box shows checked */
+function repControls() {
+  const sel = $("#rep-report");
+  const choices = repReportChoices();
+  if ([...sel.options].map((o) => o.value).join() !== choices.map((c) => c[0]).join()) {
+    sel.replaceChildren();
+    for (const [value, label] of choices) {
+      const o = el("option", "", label);
+      o.value = value;
+      sel.append(o);
+    }
+    sel.value = choices.some((c) => c[0] === repSettings.report)
+      ? repSettings.report : "daily";
+    repSettings.report = sel.value;
+  }
+  const kind = repKind();
+  $("#rep-detailed").disabled = kind === "daily";
+  $("#rep-personal").disabled = kind === "daily";
+  $("#rep-categories").disabled = kind !== "month";
+  $("#rep-categories").checked = repCategories();
+}
+
+/* the categories setting a build takes: always on for the weekly */
+const repCategories = () =>
+  repKind() === "weekly" || repSettings.categories;
 
 const repBuilding = () => !!(DATA && DATA.finance_report.building_since);
+const repDrafting = () => !!(DATA && DATA.finance_report.drafting_since);
 /* the seconds between the tap and the service reporting the build, and the
    part that tap asked for */
 let repStartingAt = 0;
 let repStartingPart = "full";
 
-const repSnapshot = () => JSON.stringify(
-  [DATA.finance_report.reports[repPicked], repPicked, repBuilding()]);
+const repSnapshot = () => JSON.stringify(DATA.finance_report);
 
+/* the heading line: the build or draft state while one is going, otherwise
+   the real report email's stamps — when the finance-daily job last sent it
+   and when the next one is due. Each row keeps its own last build time. */
 function repLine() {
   if (!DATA) return;
   const fr = DATA.finance_report;
@@ -2752,69 +3075,194 @@ function repLine() {
                         + `(${dur(Date.now() - since)})`));
     return;
   }
+  if (fr.drafting_since) {
+    $("#rep-line").replaceChildren(
+      el("span", "wrk", `drafting ${REP_LABELS[fr.drafting_section] || ""}…`));
+    return;
+  }
   if (Date.now() - repStartingAt < 30000) {
     $("#rep-line").replaceChildren(
       el("span", "wrk", `starting ${REP_LABELS[repStartingPart]} build…`));
     return;
   }
-  /* past the build states, the line belongs to the picked part's cache */
-  const rep = fr.reports[repPicked];
+  /* the picked report's job; a finished month has none, so the daily's */
+  const kind = repKind() === "weekly" ? "weekly" : "daily";
+  const job = fr.jobs[kind];
+  const parts = [];
+  if (job.last_failed)
+    parts.push(el("span", "bad", `last ${kind} email failed`), ", ");
+  parts.push(`${kind} email sent ` + (job.last_run_at
+    ? ago(Date.now() - Date.parse(job.last_run_at)) : "never"));
+  if (job.next_run_at)
+    parts.push(`, next in ${tinyDur(Date.parse(job.next_run_at) - Date.now())}`);
+  $("#rep-line").replaceChildren(...parts);
+}
+
+function repDetailEl(part) {
+  const detail = el("div", "b-detail");
+  const rep = DATA.finance_report.reports[part];
   if (!rep) {
-    $("#rep-line").textContent = `no ${REP_LABELS[repPicked]} preview yet`;
-    return;
+    detail.append(el("div", "b-status", "no preview yet"));
+    return detail;
   }
-  const built = `built ${ago(Date.now() - Date.parse(rep.built_at))}`;
-  if (rep.error) {
-    $("#rep-line").replaceChildren(el("span", "bad", "last build failed"),
-                                   `, ${built}`);
-    return;
+  detail.append(el("pre", "rawtext report", rep.error || rep.text));
+  return detail;
+}
+
+/* the build stamp line: when, and the settings the text was built with */
+function repBuiltLine(rep) {
+  const bits = [`built ${ago(Date.now() - Date.parse(rep.built_at))}`,
+                rep.report];
+  if (rep.detailed) bits.push("details");
+  if (rep.categories) bits.push("categories");
+  if (rep.combine_personal) bits.push("combine personal");
+  if (rep.drafted_at)
+    bits.push(`drafted ${ago(Date.now() - Date.parse(rep.drafted_at))}`);
+  return bits.join(" · ");
+}
+
+/* the newest saved file for this part under the header's settings — the
+   file a save with those settings would replace; a current-month build is
+   named by its build date, so any dated file counts */
+function repLastSaved(part) {
+  const hits = (DATA.finance_report.saved || []).filter((f) =>
+    f.section === part && f.report === repSettings.report
+    && f.detailed === repSettings.detailed
+    && f.categories === repCategories()
+    && f.combine_personal === repSettings.combine_personal);
+  if (!hits.length) return null;
+  return hits.reduce((a, b) => (a.saved_at >= b.saved_at ? a : b));
+}
+
+function repRowEl(part) {
+  const key = "report/" + part;
+  const fr = DATA.finance_report;
+  const rep = fr.reports[part];
+  const saved = repLastSaved(part);
+  const meta = [REP_DESCR[part],
+                (rep ? repBuiltLine(rep) : "no preview yet")
+                + (saved ? ` · last saved ${ago(Date.now() - Date.parse(saved.saved_at))}`
+                           + ` (${saved.name})` : "")];
+  const busy = repBuilding() || repDrafting()
+    || Date.now() - repStartingAt < 30000;
+  const notCarried = !repCarries(part);
+  let status = null;
+  let statusTitle = null;
+  if (fr.building_since && fr.building_section === part) {
+    status = ["building", "wrk"];
+    statusTitle = "this part is building — the text lands here when it finishes";
+  } else if (repStartingPart === part && Date.now() - repStartingAt < 30000) {
+    status = ["starting", "wrk"];
+    statusTitle = "the build started — the text lands here when it finishes";
+  } else if (fr.drafting_since && fr.drafting_section === part) {
+    status = ["drafting", "wrk"];
+    statusTitle = "this part's text is landing in the hi@ Drafts folder";
+  } else if (rep && rep.error) {
+    status = ["failed", "bad"];
+    statusTitle = "the last build of this part failed — its error replaced the text";
+  } else if (rep && rep.draft_error) {
+    status = ["draft failed", "bad"];
+    statusTitle = rep.draft_error;
+  } else if (REP_PAGE_ONLY.has(part)) {
+    status = ["preview only", ""];
+    statusTitle = "this part is not in the emailed report — page preview only";
   }
-  $("#rep-line").textContent = built;
+  const keys = el("span", "upkeys");
+  /* the chevron: first key of the cluster, same as the research rows — it
+     opens the part's cached text */
+  const exp = el("button", "key exp");
+  exp.append(icon("chevron-down"));
+  exp.title = "show this part's text";
+  exp.setAttribute("aria-expanded", openBlocks.has(key));
+  exp.addEventListener("click", () => {
+    if (openBlocks.has(key)) openBlocks.delete(key); else openBlocks.add(key);
+    renderReport();
+  });
+  const run = el("button", "key ico green");
+  run.append(icon("play"));
+  run.setAttribute("aria-label", "run");
+  run.title = notCarried
+    ? `the ${repKind()} report has no ${REP_LABELS[part]} part`
+    : "build this part with the header's report and checkboxes — it writes nothing and sends no mail";
+  run.disabled = busy || notCarried;
+  armedButton(run, `report-run/${part}`, () => startReport(part));
+  const hasText = !!(rep && rep.text);
+  const draft = el("button", "key", "email draft");
+  draft.title = hasText
+    ? "put this text — the one on the page, not a fresh build — in the hi@ Drafts folder, addressed per finance.env; nothing is sent"
+    : "nothing to draft yet — build the part first";
+  draft.disabled = busy || !hasText;
+  draft.addEventListener("click", () => draftReport(part));
+  const save = el("button", "key", "save");
+  save.title = hasText
+    ? "write this text to the reports folder as a markdown file"
+    : "nothing to save yet — build the part first";
+  save.disabled = !hasText;
+  armedButton(save, `report-save/${part}`,
+    () => post("/api/finance-report/save", { section: part }));
+  keys.append(exp, run, draft, save);
+  return rowEl({ key, onToggle: renderReport, cls: "blk",
+                 title: REP_LABELS[part], meta,
+                 status, statusTitle, keys,
+                 expand: openBlocks.has(key) ? repDetailEl(part) : null });
 }
 
 function renderReport() {
+  if (!DATA) return;
   renderedReport = repSnapshot();
-  for (const b of REP_KEYS)
-    b.classList.toggle("picked", b.dataset.part === repPicked);
+  repControls();
   const host = $("#cards-finance-report");
   host.replaceChildren();
-  const rep = DATA.finance_report.reports[repPicked];
-  if (!rep) return;
-  const panel = el("section", "panel");
-  const body = el("div", "c-body");
-  body.append(el("pre", "rawtext report", rep.error || rep.text));
-  panel.append(body);
-  host.append(panel);
+  const p = el("section", "panel");
+  for (const part of REP_PARTS) p.append(repRowEl(part));
+  host.append(p);
 }
 
-/* the create-preview key: the service answers at once and builds on its own thread,
-   so the tap only starts the clock — a refused call puts the line back */
-async function startReport() {
+/* the run key: the stamp turns the row's status to "starting" at the firing
+   tap and greys every run key until the service reports the build; a refused
+   call (a build already going) puts the row back */
+async function startReport(part) {
   repStartingAt = Date.now();
-  repStartingPart = repPicked;
+  repStartingPart = part;
+  renderReport();
   repLine();
-  if (await post("/api/finance-report/preview", { section: repPicked })) {
+  if (await post("/api/finance-report/preview",
+                 { section: part, report: repSettings.report,
+                   detailed: repSettings.detailed,
+                   categories: repCategories(),
+                   combine_personal: repSettings.combine_personal })) {
     setTimeout(poll, 2000);
   } else {
     repStartingAt = 0;
+    renderReport();
     repLine();
   }
 }
 
-/* ---- research ------------------------------------------------------------- */
+/* draft and save act on the part's cached text; the outcome lands in the
+   state — a drafted or saved stamp on the row's meta line, or a "draft
+   failed" word carrying the error */
+async function draftReport(part) {
+  if (await post("/api/finance-report/draft", { section: part }))
+    setTimeout(poll, 2000);
+}
+
+/* ---- research ---------------------------------------------------------- */
 /* One expandable row per vault web-research topic: the topic's name, a meta
    line with its cadence prefix and last successful run, and its own green
-   run key and amber delete key. While the driver's log shows consecutive
+   run key. While the driver's log shows consecutive
    failures the row carries an amber "failed ×N" status word; while the
    driver's in-flight marker shows a run, a green "running" one. A chevron key
    (or a tap on the row) opens it: the topic's prompt and the stored
    report's text in their own banded blocks, read from the service on the
-   first open and kept while the report's updated stamp stays the same; a
+   first open and kept while the report's updated stamp stays the same, and
+   the two amber delete keys at the end; a
    failing open row also holds the two-tap clear key. Run spawns
    the research driver detached: the row reads "started", then "running"
    while the marker stays fresh, and the finished report arrives by email
-   like a batch run's; delete drops the topic's stored report and failure dump, so
-   its next run starts from scratch. The batch is one cron job, so the next
+   like a batch run's; delete report drops the topic's stored report and
+   failure dump, so its next run starts from scratch; delete topic drops the
+   topic file with them. The batch is one cron job, so the next
    batch time sits in the heading line, not on the rows. */
 
 let renderedResearch = null;
@@ -2880,7 +3328,7 @@ function resDetailEl(t) {
   const detail = el("div", "b-detail");
   if (t.failing) {
     const wrap = el("div");
-    const clear = el("button", "key amber", "clear failure");
+    const clear = el("button", "key", "clear failure");
     clear.title = "clear the failure flag — it comes back if the next run fails too";
     armedButton(clear, `research-clear/${t.slug}`,
       () => post("/api/research/clear", { slug: t.slug }));
@@ -2907,6 +3355,23 @@ function resDetailEl(t) {
   } else {
     detail.append(el("div", "b-status", "reading…"));
   }
+  /* the two delete keys close the open row, right-aligned like the raw key */
+  const dels = el("div", "rawrow");
+  const delReport = el("button", "key amber", "delete report");
+  if (t.report || t.error) {
+    delReport.title = "delete this topic's report — the topic stays; its next run starts from scratch";
+    armedButton(delReport, `research-delete-report/${t.slug}`,
+      () => post("/api/research/delete_report", { slug: t.slug }));
+  } else {
+    delReport.disabled = true;
+    delReport.title = "no report to delete";
+  }
+  const delTopic = el("button", "key amber", "delete topic");
+  delTopic.title = "delete this topic and its report — it leaves the batch for good";
+  armedButton(delTopic, `research-delete-topic/${t.slug}`,
+    () => post("/api/research/delete_topic", { slug: t.slug }));
+  dels.append(delReport, delTopic);
+  detail.append(dels);
   return detail;
 }
 
@@ -2950,19 +3415,12 @@ function resRowEl(t) {
     renderResearch();
   });
   keys.append(exp);
-  const run = el("button", "key green", "run");
+  const run = el("button", "key ico green");
+  run.append(icon("play"));
+  run.setAttribute("aria-label", "run");
   run.title = "run this topic now instead of waiting for its batch — the finished report arrives by email";
   armedButton(run, `research-run/${t.slug}`, () => startResearchRun(t.slug));
-  const del = el("button", "key amber", "delete");
-  if (t.report || t.error) {
-    del.title = "delete this topic's report — the topic stays; its next run starts from scratch";
-    armedButton(del, `research-delete/${t.slug}`,
-      () => post("/api/research/delete", { slug: t.slug }));
-  } else {
-    del.disabled = true;
-    del.title = "no report to delete";
-  }
-  keys.append(run, del);
+  keys.append(run);
   return rowEl({ key, onToggle: renderResearch, cls: "blk",
                  title: resName(t.slug),
                  meta: [bits.join(" · ")],
@@ -3107,10 +3565,11 @@ function msgCardEl(c) {
       yes.title = "another row is working";
     } else {
       yes.title = `save to ${sel.selectedOptions[0].textContent}`;
-      armedButton(yes, id + "/save", () => msgResolve(c, "approve"));
+      armedButton(yes, id + "/save", () => applyRows(MSG_AREA, [{
+        attachment_id: id, location_id: msgPicks.get(id) || c.location_id }]));
     }
     keys.append(yes);
-    const non = el("button", "sq non");
+    const non = el("button", "sq gray");
     non.append(icon("x"));
     non.setAttribute("aria-label", "deny");
     if (msgWorking()) {
@@ -3118,18 +3577,9 @@ function msgCardEl(c) {
       non.title = "another row is working";
     } else {
       non.title = "deny — never propose this attachment again";
-      armedButton(non, id + "/deny", () => msgResolve(c, "deny"));
+      armedButton(non, id + "/deny", () => msgDeny(c));
     }
     keys.append(non);
-  } else if (c.status === "success") {
-    /* a saved row keeps one key: hide, the same key a finished email set
-       gets — the next scan would drop the row anyway */
-    keys = el("span", "fin-keys");
-    const hide = el("button", "key", "hide");
-    hide.title = "take this saved row off the page";
-    armedButton(hide, id + "/hide",
-                () => post("/api/messages/hide", { attachment_id: c.attachment_id }));
-    keys.append(hide);
   }
   /* the attachment's extracted text, shown by the chevron (fin-more, same as
      the finance extra area); starts closed — msgOpen is empty until a tap */
@@ -3156,15 +3606,51 @@ function renderMessages() {
   const host = $("#cards-messages");
   host.replaceChildren();
   if (DATA.messages.error) host.append(scanErrorEl(DATA.messages.error));
-  /* finished rows sink to the bottom, order otherwise unchanged */
-  const cards = [...DATA.messages.cards]
-    .sort((a, b) => (a.status === "success") - (b.status === "success"));
+  const cards = DATA.messages.cards.filter((c) => c.status !== "success");
   if (cards.length) {
     const p = el("section", "panel card fin");
     for (const c of cards) p.append(msgCardEl(c));
     host.append(p);
   }
   if (!host.children.length) host.append(emptyEl("no attachments waiting"));
+  syncMsgSubmitAll();
+  renderDone();
+}
+
+/* ---- the done section ------------------------------------------------------
+   Everything finished in the view, at the bottom: resolved sets newest
+   first as their own cards, then one card holding the saved message rows
+   and the filed finance rows in their list order (neither carries a finish
+   time). Off while it has nothing. Rebuilt by every area render and by a
+   view switch, since the view decides which areas feed it. */
+function doneItems() {
+  const inView = (id) => view === "queue" || view === id;
+  return {
+    sets: !inView("emails") ? [] : DATA.emails.sets.filter(isResolved)
+      .sort((a, b) => Date.parse(b.resolved_at) - Date.parse(a.resolved_at)),
+    msgs: !inView("messages") ? []
+      : DATA.messages.cards.filter((c) => c.status === "success"),
+    fin: !inView("finance") ? [] : finVisibleCards().filter(finSettled),
+  };
+}
+
+function renderDone() {
+  if (!DATA) return;
+  const { sets, msgs, fin } = doneItems();
+  const n = sets.length + msgs.length + fin.length;
+  $("#area-done").classList.toggle("off", !n);
+  const host = $("#cards-done");
+  host.replaceChildren();
+  if (!n) return;
+  $("#done-line").textContent = `${n} item${n === 1 ? "" : "s"}`;
+  for (const s of sets) host.append(cardEl(s));
+  if (msgs.length || fin.length) {
+    const p = el("section", "panel card fin");
+    for (const c of msgs) p.append(msgCardEl(c));
+    for (const c of fin) p.append(finCardEl(c));
+    host.append(p);
+  }
+  $("#done-clear").disabled = armedButtonBusy("done-clear");
 }
 
 /* "skip all": deny every card still waiting, one call at a time — the same
@@ -3172,12 +3658,39 @@ function renderMessages() {
 async function msgSkipAll() {
   for (const c of [...DATA.messages.cards]) {
     if (c.status !== "pending" && c.status !== "run_failed") continue;
-    await msgResolve(c, "deny");
+    await msgDeny(c);
   }
   poll();
 }
 
-async function msgResolve(c, decision) {
+/* every row waiting for a decision, each with its dropdown's destination —
+   the pick when one was made, the model's otherwise */
+function msgValidItems() {
+  if (!DATA) return [];
+  return DATA.messages.cards
+    .filter((c) => c.status === "pending" || c.status === "run_failed")
+    .map((c) => ({ attachment_id: c.attachment_id,
+                   location_id: msgPicks.get(c.attachment_id) || c.location_id }))
+    .filter((it) => it.location_id);
+}
+
+/* the messages submit-all key, the same shape as the finance one: enabled
+   only while at least one row is waiting and no row is working. The apply
+   call returns 202 as soon as the rows are claimed, so the key carries the
+   busy chip for as long as a row works. Runs on every poll (renderMeta) and
+   every messages rebuild. */
+function syncMsgSubmitAll() {
+  const b = $("#msg-submit-all");
+  const n = msgValidItems().length;
+  const busy = armedButtonBusy("msg-submit-all") || msgWorking();
+  b.disabled = busy || !n;
+  b.classList.toggle("inflight", busy);
+  b.title = busy ? "a save is running"
+          : n ? `save ${n} attachment${n === 1 ? "" : "s"} in one call`
+              : "no attachment is waiting for a decision";
+}
+
+async function msgDeny(c) {
   /* a poll replaces DATA wholesale, so work on the live card; the keys leave
      the row at the firing tap and a refused call puts the real status back */
   const live = DATA.messages.cards
@@ -3187,22 +3700,14 @@ async function msgResolve(c, decision) {
   live.status = "in_progress";
   live.status_text = "working";
   renderMessages();
-  const payload = { attachment_id: c.attachment_id, decision };
-  if (decision === "approve")
-    payload.location_id = msgPicks.get(c.attachment_id) || c.location_id;
   try {
-    const res = await fetch("/api/messages/resolve", {
+    const res = await fetch("/api/messages/deny", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Actions-Local": "1" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ attachment_id: c.attachment_id }),
     });
     const body = await res.json().catch(() => ({}));
-    if (res.status === 202) {
-      msgPicks.delete(c.attachment_id);
-      pacePoll();
-      return;
-    }
-    if (res.ok) {   /* deny: the card is gone server-side */
+    if (res.ok) {   /* the card is gone server-side */
       DATA.messages.cards = DATA.messages.cards
         .filter((x) => x.attachment_id !== c.attachment_id);
       msgPicks.delete(c.attachment_id);
@@ -3220,6 +3725,59 @@ async function msgResolve(c, decision) {
     tick();
   }
 }
+
+/* one call for one row's check key or the submit-all key, in either
+   area. A poll replaces DATA wholesale, so resolve every item against the
+   live cards — a row gone since the render is dropped here */
+async function applyRows(area, items) {
+  const { idField } = area;
+  const prev = new Map();
+  const live = [];
+  for (const it of items) {
+    const c = DATA[area.data].cards.find((x) => x[idField] === it[idField]);
+    if (!c || !area.accepted.includes(c.status)) continue;
+    prev.set(c[idField], { status: c.status, status_text: c.status_text });
+    live.push(c);
+  }
+  if (!live.length) { poll(); return; }
+  /* the keys leave the rows at the firing tap: the green [in progress]
+     shows the call is on its way even when the response takes a while; a
+     refused call puts the rows' real status back */
+  for (const c of live) {
+    c.status = "in_progress";
+    c.status_text = "working";
+  }
+  area.render();
+  try {
+    const res = await fetch(area.route, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Actions-Local": "1" },
+      body: JSON.stringify({
+        items: items.filter((it) => prev.has(it[idField])) }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 202) {
+      for (const c of live) area.clear(c[idField]);
+      pacePoll();
+      return;
+    }
+    for (const c of live) Object.assign(c, prev.get(c[idField]));
+    if (body.error) alert(body.error);
+    area.render();
+    if (res.status === 409) poll();  /* stale view: refetch */
+  } catch {
+    for (const c of live) Object.assign(c, prev.get(c[idField]));
+    area.render();
+    failed = true;
+    tick();
+  }
+}
+
+const MSG_AREA = {
+  data: "messages", idField: "attachment_id",
+  accepted: ["pending", "run_failed"], route: "/api/messages/apply",
+  render: renderMessages, clear: (id) => msgPicks.delete(id),
+};
 
 
 /* ---- Hermes audit cards ---------------------------------------------------- */
@@ -3244,14 +3802,10 @@ const auditSnapshot = () => JSON.stringify(
 
 /* the report's own wording for one category, for pasting elsewhere */
 function auditText(c, n) {
-  /* what is dismissed is off this block but still in the report the last line
-     points at, so the count says so rather than disagreeing with it */
-  const hid = c.dismissed ? ` (${c.dismissed} more dismissed here, in the`
-                            + " report)" : "";
   const head = c.findings.length
     ? `${n}. ${c.label}: warn — ${c.findings.length} finding`
-      + (c.findings.length === 1 ? "" : "s") + hid
-    : `${n}. ${c.label}: ok${hid}`;
+      + (c.findings.length === 1 ? "" : "s")
+    : `${n}. ${c.label}: ok`;
   return [head, ...c.findings.map((f) => `   - ${f}`),
           ...c.notes.map((t) => `   * ${t}`),
           "full report: ~/Iris/hermes-audit-report.md"].join("\n") + "\n";
@@ -3313,21 +3867,60 @@ function auditErrorEl(text, started) {
   return p;
 }
 
-/* one finding plus its dismiss key: reviewed, no action wanted, off the page
-   until the next pass reseeds the record. Same amber x chip the inbox rows
-   deny with, and the same two-tap arming — the finding text is unique inside
-   its category, so the armed state survives a re-render */
+/* one finding plus its keys, two-tap armed like every key on the page — the
+   finding text is unique inside its category, so the armed state survives a
+   re-render.
+   A doctor finding gets a key: expected from now on. It writes the warning
+   into doctor_known in the audit's expected.yaml, so future runs stop
+   flagging it; the finding stays until the next pass.
+   A staleness finding gets a restart key — the same launchd kickstart
+   the system area's key runs, on the process the finding names, so the fix is
+   one tap from the finding. The finding stays until the next pass re-reads the
+   process; the system area's uptime line is what says the restart landed.
+   A doctor finding also gets a fix key: one `hermes doctor --fix` for the
+   shared install, so every profile's copy of a fixable warning (the macOS TCC
+   anchor) clears on the next pass. One armed id for all doctor rows: the run
+   is one run, whichever row's key fired it, so the keys arm, fly and settle
+   together (armed-button.js). */
+const DOCTOR_MARK = ": new doctor warning — ";
+const STALE_MARK = " started before the newest plugin deploy ";
+const RESTART_TIP = {
+  gateway: "restart the hermes gateway, so it reloads the tool-approvals "
+           + "plugin — a chat in flight is dropped",
+  webui: "restart the hermes webui, so it reloads the tool-approvals "
+         + "plugin — an open chat page needs a reload",
+};
 function auditFindEl(c, f) {
   const row = el("div", "aud-find");
   row.append(el("span", "b-text", f));
-  const non = el("button", "sq non");
-  non.append(icon("x"));
-  non.setAttribute("aria-label", "dismiss this finding");
-  non.title = "hide this finding until the next run";
-  armedButton(non, `aud/${c.label}/${f}`, () =>
-    post("/api/hermes-audit/dismiss", { category: c.label, finding: f }));
   const sqs = el("div", "sqs");
-  sqs.append(non);
+  const stale = Object.keys(RESTART_TIP).find((n) => f.startsWith(n + STALE_MARK));
+  if (stale) {
+    const res = el("button", "sq gray");
+    res.append(icon("rotate-cw"));
+    res.setAttribute("aria-label", `restart the hermes ${stale}`);
+    res.title = RESTART_TIP[stale];
+    armedButton(res, `aud-restart/${stale}`, () =>
+      post(`/api/system/restart-${stale}`, {}));
+    sqs.append(res);
+  }
+  if (f.includes(DOCTOR_MARK)) {
+    const fix = el("button", "sq gray");
+    fix.append(icon("wrench"));
+    fix.setAttribute("aria-label", "run hermes doctor --fix");
+    fix.title = "run hermes doctor --fix: repairs what doctor can (the macOS "
+      + "TCC anchor, the CA bundle, the hermes link); the finding stays until "
+      + "the next pass";
+    armedButton(fix, "aud-doctor-fix", () => post("/api/system/doctor-fix", {}));
+    sqs.append(fix);
+    const ign = el("button", "sq gray");
+    ign.append(icon("bell-off"));
+    ign.setAttribute("aria-label", "add this doctor warning to the known list");
+    ign.title = "expected from now on: future runs stop flagging this warning";
+    armedButton(ign, `aud-ign/${c.label}/${f}`, () =>
+      post("/api/hermes-audit/ignore-doctor", { category: c.label, finding: f }));
+    sqs.append(ign);
+  }
   row.append(sqs);
   return row;
 }
@@ -3355,7 +3948,6 @@ function renderAudit() {
   host.replaceChildren();
   clean.textContent = "";
   clean.removeAttribute("title");
-  $("#aud-restore").disabled = !armedButtonBusy("audit-restore");
   const run = DATA.hermes_audit.run;
   /* between the tap and the child taking the lock the record still holds the
      previous pass, and those cards are answered for */
@@ -3365,31 +3957,200 @@ function renderAudit() {
                              !!run && !run.finished_at));
   if (!run) return;
   const cats = run.categories || [];
-  /* a card whose findings are all dismissed leaves the page; the line below
-     is where it is still named, so a warn category never vanishes silently */
   cats.forEach((c, i) => {
     if (c.state === "warn" && c.findings.length) host.append(auditCardEl(c, i + 1));
   });
-  /* a card whose findings are all dismissed leaves the page, and a category
-     with no findings never had one — the heading counts both, and names them
-     in its tooltip. The restore key is what undoes a dismissal. */
+  /* a category with no findings gets no card — the heading counts them, and
+     names them in its tooltip */
   const ok = cats.filter((c) => c.state === "ok").map((c) => c.label);
-  const hid = cats.filter((c) => c.dismissed);
-  const dismissed = hid.reduce((n, c) => n + c.dismissed, 0);
-  $("#aud-restore").disabled = !dismissed || armedButtonBusy("audit-restore");
-  const bits = [];
-  if (ok.length) bits.push(`${ok.length} clean`);
-  if (dismissed) bits.push(`${dismissed} dismissed`);
-  if (!bits.length) return;
-  clean.textContent = ", " + bits.join(", ");
-  const tip = [];
-  if (ok.length)
-    tip.push((run.finished_at ? "no findings: " : "no findings so far: ")
-      + ok.join(", "));
-  if (dismissed)
-    tip.push("dismissed: "
-      + hid.map((c) => `${c.dismissed} in ${c.label}`).join(", "));
-  clean.title = tip.join("\n");
+  if (!ok.length) return;
+  clean.textContent = `, ${ok.length} clean`;
+  clean.title = (run.finished_at ? "no findings: " : "no findings so far: ")
+    + ok.join(", ");
+}
+
+
+/* ---- jobs ----------------------------------------------------------------- */
+/* One row per enabled hermes cron job: the job's name, the duration of
+   its last 3 finished runs (newest first, from hermes' executions
+   ledger), a failed cell saying when each of the last week's failed runs
+   happened (ledger, newest first, at most 3), its last and next run, a
+   status word — blue "running" from hermes' executions
+   ledger (scheduled runs and page-started ones alike), amber "failed" or
+   "issue" from the job's iris-status state, with that state's detail as the
+   row's error line — a chevron key that opens the row's extra area (the
+   job's schedule, and its 7-day in-run retry count with the newest retry
+   message, from the scripts' retry log), and a run key. Run
+   starts `hermes cron run` detached, the same run the schedule makes; the
+   row reads "started" until a poll sees the run in the ledger. */
+
+let renderedJobs = null;
+const jobsSnapshot = () => JSON.stringify(DATA.jobs);
+/* name -> stamp of a run this page started: the row reads "started" and its
+   key stays grey for 30 s after the tap — the bridge until the run lands in
+   hermes' ledger. tick() re-renders while any stamp lives, so the note
+   expires on its own. */
+const jobsStarted = new Map();
+/* names of the rows whose chevron is open — survives re-renders */
+const openJobs = new Set();
+
+/* the heading line: the job count, a blue count of runs in flight, an amber
+   count of failing jobs, and the soonest scheduled run */
+function jobsLine() {
+  if (!DATA) return;
+  const line = $("#jobs-line");
+  if (DATA.jobs.error) {
+    line.replaceChildren(el("span", "bad", DATA.jobs.error));
+    return;
+  }
+  const js = DATA.jobs.jobs;
+  const runs = js.filter((j) => j.running_since).length;
+  const bad = js.filter((j) => j.state === "bad").length;
+  const bits = [`${js.length} job${js.length === 1 ? "" : "s"}`];
+  if (runs) bits.push(", ", el("span", "wrk", `${runs} running`));
+  if (bad) bits.push(", ", el("span", "bad", `${bad} failing`));
+  const next = js.map((j) => j.next_run_at).filter(Boolean)
+    .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+  if (next) bits.push(`, next in ${tinyDur(Date.parse(next) - Date.now())}`);
+  line.replaceChildren(...bits);
+}
+
+/* a run's length: whole seconds under a minute, then minutes and hours
+   with one decimal ("42s", "3.5m", "1.2h") */
+function runDur(s) {
+  if (s < 60) return Math.round(s) + "s";
+  if (s < 3600) return +(s / 60).toFixed(1) + "m";
+  return +(s / 3600).toFixed(1) + "h";
+}
+
+function jobRowEl(j) {
+  let status = null;
+  let statusTitle = null;
+  const since = jobsStarted.get(j.name);
+  const starting = since && Date.now() - since < 30000;
+  if (j.running_since) {
+    jobsStarted.delete(j.name);
+    status = ["running", "wrk"];
+    statusTitle = "a run is in flight, started "
+      + ago(Date.now() - Date.parse(j.running_since));
+  } else if (starting) {
+    status = ["started", "wrk"];
+    statusTitle = "the run started — the next poll shows it";
+  } else {
+    jobsStarted.delete(j.name);
+    /* iris-status can flag a job whose last run exited ok (overdue, stale
+       output files) — that reads "issue", a failed last run reads "failed";
+       either way the detail sits in the row's error line */
+    if (j.state === "bad")
+      status = [j.last_status && j.last_status !== "ok" ? "failed" : "issue",
+                "bad"];
+  }
+  const row = el("div", "jobrow");
+  if (openJobs.has(j.name)) row.classList.add("open");
+  row.append(el("span", "b-title", j.name));
+  const took = el("span", "b-meta jtook",
+    j.took.length ? j.took.map(runDur).join(" \u00b7 ") : "\u2013");
+  if (j.took.length)
+    took.title = "duration of the last " + j.took.length
+      + " finished runs, newest first";
+  row.append(took);
+  /* the failed cell: when each of the last week's failed runs happened
+     (from the ledger, newest first, at most 3) — amber inside a day,
+     green inside three, the page's gray beyond that */
+  const fails = el("span", "b-meta jfail");
+  if (!j.fails_7d.length) fails.textContent = "–";
+  else {
+    const day = 24 * 3600 * 1000;
+    j.fails_7d.forEach((s, i) => {
+      if (i) fails.append(" · ");
+      const age = Date.now() - Date.parse(s);
+      const cls = age < day ? "bad" : age < 3 * day ? "ok" : "";
+      fails.append(cls ? el("span", cls, tinyDur(age)) : tinyDur(age));
+    });
+    fails.title = "failed runs in the last 7 days, newest first";
+  }
+  row.append(fails);
+  /* the headers carry the "ago" and "in", so the cells are bare compact
+     spans (tinyDur), same form as the failed cell */
+  row.append(el("span", "b-meta", j.last_run_at
+    ? tinyDur(Date.now() - Date.parse(j.last_run_at)) : "never"));
+  row.append(el("span", "b-meta jnext", j.next_run_at
+    ? tinyDur(Date.parse(j.next_run_at) - Date.now()) : "–"));
+  const st = el("span", "stat" + (status ? " " + status[1] : ""),
+                status ? status[0] : "");
+  if (statusTitle) st.title = statusTitle;
+  row.append(st);
+  /* the chevron: same key as the finance rows — it opens the row's
+     extra area with the schedule and the newest retry */
+  const exp = el("button", "key exp");
+  exp.append(icon("chevron-down"));
+  exp.title = "show the job's schedule and its newest retry";
+  exp.setAttribute("aria-expanded", openJobs.has(j.name));
+  exp.addEventListener("click", () => {
+    if (openJobs.has(j.name)) openJobs.delete(j.name);
+    else openJobs.add(j.name);
+    renderJobs();
+  });
+  row.append(exp);
+  const run = el("button", "key ico green");
+  run.append(icon("play"));
+  run.setAttribute("aria-label", "run");
+  if (j.running_since || starting) {
+    run.disabled = true;
+    run.title = "a run is going";
+  } else {
+    run.title = "run this job now — the same run the schedule makes";
+    armedButton(run, "job-run/" + j.name, () => startJob(j.name));
+  }
+  row.append(run);
+  const more = el("div", "jmore");
+  more.append(el("div", "b-meta",
+    "schedule " + (j.every || "–") + (j.at ? " at " + j.at : "")));
+  if (j.retries_7d)
+    more.append(el("div", "b-meta",
+      j.retries_7d + (j.retries_7d === 1 ? " retry" : " retries")
+      + " in the last 7 days · newest: " + j.last_retry));
+  row.append(more);
+  if (j.state === "bad" && j.detail) row.append(el("div", "b-err", j.detail));
+  return row;
+}
+
+function renderJobs() {
+  if (!DATA) return;
+  renderedJobs = jobsSnapshot();
+  const host = $("#cards-jobs");
+  host.replaceChildren();
+  const js = DATA.jobs.jobs;
+  if (!js.length) {
+    host.append(emptyEl("no jobs"));
+    return;
+  }
+  const grid = el("div");
+  grid.id = "jobs-grid";
+  const head = el("div", "jobrow");
+  for (const [text, cls] of [["name", ""], ["duration", "jtook"],
+                             ["failed ago", "jfail"], ["last run ago", ""],
+                             ["next run in", "jnext"],
+                             ["", ""], ["", ""], ["", ""]])
+    head.append(el("span", "fk " + cls, text));
+  grid.append(head);
+  for (const j of js) grid.append(jobRowEl(j));
+  const p = el("section", "panel");
+  p.append(grid);
+  host.append(p);
+}
+
+/* the run key: the stamp turns the row's status to "started" and greys its
+   key at the firing tap; a refused call puts both back */
+async function startJob(name) {
+  jobsStarted.set(name, Date.now());
+  renderJobs();
+  if (await post("/api/jobs/run", { name })) {
+    setTimeout(poll, 2000);
+  } else {
+    jobsStarted.delete(name);
+    renderJobs();
+  }
 }
 
 /* the rows whose green check key would fire right now: pending, a category
@@ -3429,60 +4190,15 @@ function syncSubmitAll() {
               : "no row is ready — each needs a category and a payee-rule choice";
 }
 
-async function finApply(items) {
-  /* one call for one row's check key or the submit-all key. A poll replaces
-     DATA wholesale, so resolve every item against the live cards — a row
-     pruned since the render is dropped here */
-  const prev = new Map();
-  const live = [];
-  for (const it of items) {
-    const c = DATA.finance.cards.find(
-      (x) => x.transaction_id === it.transaction_id);
-    if (!c || c.status !== "pending") continue;
-    prev.set(c.transaction_id, { status: c.status, status_text: c.status_text });
-    live.push(c);
-  }
-  if (!live.length) { poll(); return; }
-  /* the keys leave the rows at the firing tap: the green [in progress]
-     shows the call is on its way even when the response takes a while; a
-     refused call puts the rows' real status back */
-  for (const c of live) {
-    c.status = "in_progress";
-    c.status_text = "working";
-  }
-  renderFinance();
-  try {
-    const res = await fetch("/api/finance/apply", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Actions-Local": "1" },
-      body: JSON.stringify({
-        items: items.filter((it) => prev.has(it.transaction_id)) }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (res.status === 202) {
-      for (const c of live) {
-        const id = c.transaction_id;
-        finPicks.delete(id);
-        finRule.delete(id);
-        finApprox.delete(id);
-        finOpen.delete(id);
-        finCreating.delete(id);
-        finDraft.delete(id);
-      }
-      pacePoll();
-      return;
-    }
-    for (const c of live) Object.assign(c, prev.get(c.transaction_id));
-    if (body.error) alert(body.error);
-    renderFinance();
-    if (res.status === 409) poll();  /* stale view: refetch */
-  } catch {
-    for (const c of live) Object.assign(c, prev.get(c.transaction_id));
-    renderFinance();
-    failed = true;
-    tick();
-  }
-}
+const FIN_AREA = {
+  data: "finance", idField: "transaction_id",
+  accepted: ["pending"], route: "/api/finance/apply",
+  render: renderFinance,
+  clear: (id) => {
+    for (const m of [finPicks, finRule, finApprox, finOpen, finCreating, finDraft])
+      m.delete(id);
+  },
+};
 
 /* the create-category call: the accept key stays in flight until the write
    settles. On success the new category enters the local picker data
@@ -3593,14 +4309,24 @@ async function retrySet(s) {
   }
 }
 
-/* "skip all": deny every pending row of the set, one call at a time. Each
+/* "skip": deny every pending row of the set, one call at a time. Each
    decide() rebuilds the cards; armedButton's registry keeps the rebuilt key
    disabled and pulsing until this whole loop settles */
-async function skipAll(s) {
+async function denyPending(s) {
   for (const r of s.rows) {
     if (r.status !== "pending") continue;
     await decide(s, r, "deny");
   }
+}
+async function skipAll(s) {
+  await denyPending(s);
+  poll();
+}
+
+/* the emails header's "skip all": the same deny loop over every set on the
+   page */
+async function emailsSkipAll() {
+  for (const s of [...DATA.emails.sets]) await denyPending(s);
   poll();
 }
 
@@ -3648,32 +4374,52 @@ armedButton($("#rescan"), "rescan-emails", startScan);
 /* both keys re-derive their own state from the data that landed: the poll
    inside the call is not awaited, so armed-button's re-enable would
    otherwise leave a key bright on an empty area */
-armedButton($("#emails-hide"), "emails-hide-finished",
-  () => post("/api/emails/hide", { all: true })
+armedButton($("#emails-skip"), "emails-skip-all",
+  () => emailsSkipAll().finally(() => setTimeout(renderMeta)));
+armedButton($("#fin-email-hide"), "fin-email-hide-all",
+  () => post("/api/finance/skip", { pick: "email" })
     .finally(() => setTimeout(renderMeta)));
-armedButton($("#fin-hide"), "fin-hide-finished",
-  () => post("/api/finance/hide", { all: true })
+armedButton($("#fin-odd-seen-all"), "fin-odd-seen-all",
+  () => post("/api/finance/odd-seen", { all: true })
     .finally(() => setTimeout(renderMeta)));
-armedButton($("#msg-hide"), "messages-hide-finished",
-  () => post("/api/messages/hide", { all: true })
-    .finally(() => setTimeout(renderMeta)));
+/* clear: the hide-all of every area with something in the done section;
+   the section re-derives itself from the data that lands */
+armedButton($("#done-clear"), "done-clear", () => {
+  const { sets, msgs, fin } = doneItems();
+  return Promise.all([
+    sets.length && post("/api/emails/hide", { all: true }),
+    msgs.length && post("/api/messages/hide", { all: true }),
+    fin.length && post("/api/finance/hide", { all: true }),
+  ].filter(Boolean)).finally(() => setTimeout(renderDone));
+});
 armedButton($("#msg-skip"), "messages-skip-all",
   () => msgSkipAll().finally(() => setTimeout(renderMeta)));
+armedButton($("#msg-submit-all"), "msg-submit-all",
+  () => applyRows(MSG_AREA, msgValidItems()).finally(
+    () => setTimeout(syncMsgSubmitAll)));
 armedButton($("#fin-rescan"), "rescan-finance", startFinScan);
-armedButton($("#rep-build"), "preview-finance-report", startReport);
-/* a part key only switches the panel to that part's cached text — the
-   render is local, so no poll is waited on */
-for (const b of REP_KEYS) {
-  b.title = "show this part's last build — the create-preview key rebuilds the picked part";
-  b.addEventListener("click", () => {
-    repPicked = b.dataset.part;
-    if (DATA) {
-      renderReport();
-      repLine();
-    }
-  });
-}
 armedButton($("#msg-rescan"), "rescan-messages", startMsgScan);
+/* the report header's settings: every change re-renders the rows — a row
+   the picked report does not carry greys, the checkboxes grey where the
+   report ignores them, the heading line follows the report's job, and the
+   last-saved note follows the picked combination */
+$("#rep-report").addEventListener("change", () => {
+  repSettings.report = $("#rep-report").value;
+  renderReport();
+  repLine();
+});
+$("#rep-detailed").addEventListener("change", (e) => {
+  repSettings.detailed = e.target.checked;
+  renderReport();
+});
+$("#rep-categories").addEventListener("change", (e) => {
+  repSettings.categories = e.target.checked;
+  renderReport();
+});
+$("#rep-personal").addEventListener("change", (e) => {
+  repSettings.combine_personal = e.target.checked;
+  renderReport();
+});
 armedButton($("#msg-reset"), "msg-reset",
   () => post("/api/messages/reset", {})
     .then((ok) => ok && new Promise((r) => setTimeout(r, 5000))));
@@ -3682,7 +4428,7 @@ armedButton($("#msg-reset"), "msg-reset",
    settles; the timeout re-derives the key's state after that, because the
    rows keep working past the 202. */
 armedButton($("#fin-submit-all"), "fin-submit-all",
-  () => finApply(finValidItems()).finally(
+  () => applyRows(FIN_AREA, finValidItems()).finally(
     () => setTimeout(syncSubmitAll)));
 /* both keys restart a launchd agent that loads the tool-approvals plugin at
    start; nothing on this page changes, so neither re-derives any state */
@@ -3724,10 +4470,8 @@ armedButton($("#aud-run"), "audit-run", auditKey(startAudit));
 armedButton($("#aud-stop"), "audit-stop",
   auditKey(() => post("/api/hermes-audit/stop", {})));
 armedButton($("#aud-reset"), "audit-reset", auditKey(resetAudit));
-armedButton($("#aud-restore"), "audit-restore",
-  auditKey(() => post("/api/hermes-audit/restore", {})));
 /* success holds the reset key in flight 5 s so the tap visibly landed */
-armedButton($("#reset-all"), "reset-reviewed",
+armedButton($("#emails-reset"), "reset-reviewed",
   () => post("/api/emails/reset", { all: true })
     .then((ok) => ok && new Promise((r) => setTimeout(r, 5000))));
 poll();

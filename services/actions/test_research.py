@@ -16,6 +16,7 @@ import unittest
 from datetime import datetime, timedelta
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import common
 import research
 
 
@@ -26,13 +27,13 @@ class ResearchTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         tmp = pathlib.Path(self._tmp.name)
         self._saved = (research.TOPICS, research.REPORTS, research.RUNS,
-                       research.RUNNING, research.CLEARED, research.CRON_JOBS)
+                       research.RUNNING, research.CLEARED, common.CRON_JOBS)
         research.TOPICS = tmp / "topics"
         research.REPORTS = tmp / "reports"
         research.RUNS = tmp / "runs.jsonl"
         research.RUNNING = tmp / "running.json"
         research.CLEARED = tmp / "research-cleared.json"
-        research.CRON_JOBS = tmp / "jobs.json"
+        common.CRON_JOBS = tmp / "jobs.json"
         research.TOPICS.mkdir()
         research.REPORTS.mkdir()
         self.spawns = []
@@ -49,7 +50,7 @@ class ResearchTest(unittest.TestCase):
 
     def tearDown(self):
         (research.TOPICS, research.REPORTS, research.RUNS,
-         research.RUNNING, research.CLEARED, research.CRON_JOBS) = self._saved
+         research.RUNNING, research.CLEARED, common.CRON_JOBS) = self._saved
         self._tmp.cleanup()
 
     def topic(self, slug, question="the question"):
@@ -66,7 +67,7 @@ class ResearchTest(unittest.TestCase):
             "".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
 
     def cron(self, next_run_at):
-        research.CRON_JOBS.write_text(json.dumps({"jobs": [
+        common.CRON_JOBS.write_text(json.dumps({"jobs": [
             {"name": "research-batch", "next_run_at": next_run_at}]}),
             encoding="utf-8")
 
@@ -142,7 +143,7 @@ class TestState(ResearchTest):
                          "2026-08-28T03:00:00-07:00")
 
     def test_an_unreadable_cron_file_means_no_next_batch(self):
-        research.CRON_JOBS.write_text("not json", encoding="utf-8")
+        common.CRON_JOBS.write_text("not json", encoding="utf-8")
         self.assertIsNone(research.state()["next_batch"])
 
 
@@ -166,6 +167,16 @@ class TestReport(ResearchTest):
         for slug in ("daily-nope", "../topics/daily-thing", ""):
             code, _ = research._h_report({"slug": slug})
             self.assertEqual(code, 400)
+
+    def test_report_with_unterminated_frontmatter_is_read_whole(self):
+        # starts with "---\n" but the closing "\n---\n" is never found
+        # (str.find returns -1) — the whole file is the body, no metadata
+        self.topic("daily-thing")
+        raw = "---\ntopic: daily-thing\nno closing marker here\n"
+        (research.REPORTS / "daily-thing.md").write_text(raw, encoding="utf-8")
+        code, out = research._h_report({"slug": "daily-thing"})
+        self.assertEqual((code, out), (200, {
+            "question": "the question", "report": raw, "updated": None}))
 
 
 class TestClear(ResearchTest):
@@ -243,14 +254,14 @@ class TestRun(ResearchTest):
         self.assertIn("could not start the driver", out["error"])
 
 
-class TestDelete(ResearchTest):
+class TestDeleteReport(ResearchTest):
 
     def test_deletes_the_report_and_the_failure_dump_keeps_the_topic(self):
         self.topic("daily-thing")
         self.report("daily-thing")
         (research.REPORTS / "error-daily-thing.md").write_text("x",
                                                                encoding="utf-8")
-        code, out = research._h_delete({"slug": "daily-thing"})
+        code, out = research._h_delete_report({"slug": "daily-thing"})
         self.assertEqual(code, 200)
         self.assertEqual(sorted(out["deleted"]),
                          ["daily-thing.md", "error-daily-thing.md"])
@@ -259,12 +270,42 @@ class TestDelete(ResearchTest):
 
     def test_nothing_to_delete_is_400(self):
         self.topic("daily-thing")
-        code, _ = research._h_delete({"slug": "daily-thing"})
+        code, _ = research._h_delete_report({"slug": "daily-thing"})
         self.assertEqual(code, 400)
 
     def test_malformed_slug_is_400(self):
-        code, _ = research._h_delete({"slug": "../topics/daily-thing"})
+        code, _ = research._h_delete_report({"slug": "../topics/daily-thing"})
         self.assertEqual(code, 400)
+
+
+class TestDeleteTopic(ResearchTest):
+
+    def test_deletes_the_topic_with_its_report_and_failure_dump(self):
+        self.topic("daily-thing")
+        self.report("daily-thing")
+        (research.REPORTS / "error-daily-thing.md").write_text("x",
+                                                               encoding="utf-8")
+        code, out = research._h_delete_topic({"slug": "daily-thing"})
+        self.assertEqual(code, 200)
+        self.assertEqual(sorted(out["deleted"]),
+                         ["daily-thing.md", "daily-thing.md",
+                          "error-daily-thing.md"])
+        self.assertEqual(list(research.TOPICS.iterdir()), [])
+        self.assertEqual(list(research.REPORTS.iterdir()), [])
+
+    def test_a_topic_without_a_report_deletes_just_the_topic(self):
+        self.topic("daily-thing")
+        code, out = research._h_delete_topic({"slug": "daily-thing"})
+        self.assertEqual(code, 200)
+        self.assertEqual(out["deleted"], ["daily-thing.md"])
+        self.assertEqual(list(research.TOPICS.iterdir()), [])
+
+    def test_unknown_or_malformed_slug_is_400(self):
+        self.report("daily-thing")
+        for slug in ("daily-thing", "../reports/daily-thing"):
+            code, _ = research._h_delete_topic({"slug": slug})
+            self.assertEqual(code, 400)
+        self.assertTrue((research.REPORTS / "daily-thing.md").exists())
 
 
 if __name__ == "__main__":

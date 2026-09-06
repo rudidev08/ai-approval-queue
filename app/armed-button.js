@@ -14,16 +14,40 @@
    settle the key returns to the disabled state the render gave the current
    node, so a render-disabled key stays disabled.
 
+   Keys that fire the same call share one id (the audit's doctor-fix key,
+   one per doctor finding): every key on the page wired under the id arms,
+   flies and settles together, and the confirming tap can land on any of
+   them. The group is found on the page by the id each wire stamps on its
+   node, so a node a render dropped is simply not there any more.
+
    armedButtonBusy(id) reports an in-flight id, for page code that sets a
    key's disabled state itself while the request runs. */
 "use strict";
 
 const AB_ARM_MS = 5000;
-const AB_STATE = new Map();   // id -> {mode, node, timer?, title?, wasDisabled?}
+const AB_STATE = new Map();     // id -> {mode, timer?}
+const AB_TITLE = new WeakMap(); // node -> its own title, while armed
+const AB_WAS = new WeakMap();   // node -> its disabled state, while in flight
 
 function armedButtonBusy(id) {
   const st = AB_STATE.get(id);
   return !!st && st.mode === "inflight";
+}
+
+function abGroup(id) {
+  return document.querySelectorAll(`[data-armed-id="${CSS.escape(id)}"]`);
+}
+
+function abArm(node) {
+  AB_TITLE.set(node, node.getAttribute("title"));
+  node.classList.add("armed");
+  node.title = "tap again to confirm";
+}
+
+function abFly(node) {
+  AB_WAS.set(node, node.disabled);
+  node.disabled = true;
+  node.classList.add("inflight");
 }
 
 function abDisarm(id) {
@@ -31,24 +55,20 @@ function abDisarm(id) {
   if (!st || st.mode !== "armed") return;
   clearTimeout(st.timer);
   AB_STATE.delete(id);
-  st.node.classList.remove("armed");
-  if (st.title == null) st.node.removeAttribute("title");
-  else st.node.title = st.title;
+  for (const node of abGroup(id)) {
+    node.classList.remove("armed");
+    const title = AB_TITLE.get(node);
+    if (title == null) node.removeAttribute("title");
+    else node.title = title;
+  }
 }
 
 function armedButton(btn, id, fire) {
+  btn.dataset.armedId = id;
   const st = AB_STATE.get(id);
   if (st) {                        // a rebuilt node resumes its state
-    st.node = btn;
-    if (st.mode === "inflight") {
-      st.wasDisabled = btn.disabled;
-      btn.disabled = true;
-      btn.classList.add("inflight");
-    } else {
-      st.title = btn.getAttribute("title");
-      btn.classList.add("armed");
-      btn.title = "tap again to confirm";
-    }
+    if (st.mode === "inflight") abFly(btn);
+    else abArm(btn);
   }
   btn.addEventListener("click", (e) => {
     e.stopPropagation();           // a key tap never toggles its row
@@ -56,22 +76,19 @@ function armedButton(btn, id, fire) {
     if (cur && cur.mode === "inflight") return;
     if (cur) {                     // armed — this is the confirming tap
       abDisarm(id);
-      const run = { mode: "inflight", node: btn, wasDisabled: false };
-      AB_STATE.set(id, run);
-      btn.disabled = true;
-      btn.classList.add("inflight");
+      AB_STATE.set(id, { mode: "inflight" });
+      for (const node of abGroup(id)) abFly(node);
       Promise.resolve(fire()).finally(() => {
         AB_STATE.delete(id);
-        run.node.classList.remove("inflight");
-        run.node.disabled = run.wasDisabled;
+        for (const node of abGroup(id)) {
+          node.classList.remove("inflight");
+          node.disabled = AB_WAS.get(node);
+        }
       });
       return;
     }
-    const arm = { mode: "armed", node: btn,
-                  title: btn.getAttribute("title"),
-                  timer: setTimeout(() => abDisarm(id), AB_ARM_MS) };
-    AB_STATE.set(id, arm);
-    btn.classList.add("armed");
-    btn.title = "tap again to confirm";
+    AB_STATE.set(id, { mode: "armed",
+                       timer: setTimeout(() => abDisarm(id), AB_ARM_MS) });
+    for (const node of abGroup(id)) abArm(node);
   });
 }

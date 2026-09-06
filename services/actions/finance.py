@@ -2,29 +2,30 @@
 apply path.
 
 Served by server.py (one process, one page). The finance-uncategorized cron
-job (finance_scan.py; finance-daily only emails the report) builds the
-card batch — the 5 newest plus 5 random uncategorized transactions with
+job (finance_jobs.py; finance-daily only emails the report) builds the
+card batch — the LATEST_CAP newest uncategorized transactions with
 category suggestions — and saves it here. Each card carries the pick it came
-from ('latest' or 'random'), which the page shows as two groups. A third
-pick, 'email', holds cards proposed from a ping mail through the email
-channel's run_action — stored here so prune, settle, skip and apply cover
-them, but never added or rebuilt by the scan. A run fired
+from: 'latest' from the scan, or 'email' for cards proposed from a ping mail
+through the email channel's create_cards_from_email — stored here so prune,
+settle, skip and apply cover them, but never added or rebuilt by the scan. A run fired
 by the page's scan key
 replaces the whole batch, so a transaction can never show as two cards; a
-scheduled run only tops up open slots (of LATEST_CAP and RANDOM_CAP, counted
-per pick): cards still pending
+scheduled run only tops up the open slots (LATEST_CAP, email cards not
+counted): cards still pending
 stay, finished cards leave, and new cards fill the freed slots, newest
 candidates first. A failed run saves an error record
 instead (which step, error text); the page renders it as a card with no
 buttons.
 
-A scheduled save waits while the page is open (PAGE_ACTIVE_SECONDS since
-the last /api/state poll), so a top-up never swaps the cards out from under
-a review. A page left open therefore holds the batch until it closes; the
-page shows the batch's age so that reads as a held rebuild, not a stall. The
-page's own scan key never waits and always rebuilds — it stamps
-_SCAN_REQUESTED when it fires the job, which marks that run's save as asked
-for.
+A scheduled save waits while the page is open with cards still pending
+(PAGE_ACTIVE_SECONDS since the page's last flagged /api/state poll), so a
+top-up never swaps the cards out from under a review; a settled-only batch
+has no review to protect and the save lands. The page's own poll carries
+the hold-update query flag — other /api/state pollers (the menu-bar app's
+badge count) never hold a save. The page shows the batch's age so a held
+rebuild reads as old, not fresh. The page's own scan key never waits and
+always rebuilds — it stamps _SCAN_REQUESTED when it fires the job, which
+marks that run's save as asked for.
 
 State lives in common.STATE_DIR (same tmp+fsync+replace write as the emails
 area, under this module's own LOCK): finance.json — one batch object:
@@ -34,14 +35,30 @@ through /api/finance/ask, answered by reply mail, paired back to
 transactions by the inbox scan — the emails area's categorize_transaction
 rows execute through categorize_one below). An ask is open while any of its
 items is still uncategorized and it is younger than ASK_DAYS; the scan's
-payload build (open_asks_payload) prunes dead ones. The shared decisions
-log gets one line per event: finance_batch_saved, finance_batch_error,
-finance_card_resolved, finance_card_skipped, finance_cards_hidden,
-finance_category_created, finance_ask_created, finance_ask_pruned.
+payload build (open_asks_payload) prunes dead ones;
+finance-oddities.json — the oddities queue, a list of transaction ids;
+finance-oddities-seen.json — {transaction id: its date} for the ones the
+seen key took off. The shared decisions log gets one line per event:
+finance_batch_saved, finance_batch_error, finance_card_resolved,
+finance_card_skipped, finance_cards_hidden, finance_category_created,
+finance_ask_created, finance_ask_pruned, finance_oddity_seen.
+
+Oddities: every poll runs the odd-charge rules of
+services/mcp/actual/oddities.py (the same rules the daily email's Outliers
+section prints) over the api-cache copy — the last ODD_WINDOW_DAYS days of
+spending, plus every transaction already queued. A flagged transaction
+that is neither queued nor seen joins the queue; a queued one stays until
+the seen key takes it off (or until the rules stop flagging it — a twin
+deleted, the row parked in an excluded group — since an id with no flag has
+nothing to show). The seen file keeps the cutoff of the rules' window, so a
+seen transaction can never be flagged again: by the time its entry is
+purged its date is outside the window the rules read. The page gets one
+row per queued transaction with its reasons; the finance tile counts them
+with the pending cards.
 
 Execution: POST /api/finance/apply takes a list of items — the page's
 per-row check key sends one, its submit-all key sends every valid row —
-and runs write.mjs (the actual MCP server's helper, run in place with node;
+and runs budget_helper.mjs (the actual MCP server's helper, run in place with node;
 it resolves @actual-app/api from ~/Iris/services/actual/node_modules via
 createRequire) once, with one categorize op per item — category plus payee
 rule (skipped when the item
@@ -51,7 +68,7 @@ in the freshly downloaded budget: gone, already categorized, split, or
 turned transfer means no write, and that card resolves as already handled.
 One apply call runs at a time (409 while any card is in_progress); cards
 left in_progress by a crash are settled at boot against the api-cache copy
-(write.mjs downloads the budget into it before applying, so a landed write
+(budget_helper.mjs downloads the budget into it before applying, so a landed write
 shows there).
 
 Pruning: a pending card whose transaction the api-cache copy shows
@@ -65,11 +82,17 @@ Endpoints (HANDLERS; guards and dispatch live in server.py):
 - POST /api/finance/batch   {cards: [...]} from a good run, {error: {step,
                             message}} from a failed one. A scan-key run
                             replaces the whole batch; a scheduled run tops up
-                            each pick's open slots and is held (409) while the
-                            page is
-                            open. 409 also while a card is executing — a
-                            refusal, not a failure, and the scan treats it as
-                            one
+                            the open slots and is held (409) while the
+                            page is open with cards still pending. 409 also
+                            while a card is executing — a refusal, not a
+                            failure, and the scan treats it as one
+- POST /api/finance/scan-check  {candidates: [{transaction_id, pick}]}: the
+                            scan's pre-LLM question — would a scheduled save
+                            land any of these right now? Answers {proceed,
+                            reason} with save_batch's own arithmetic; a
+                            page-asked rebuild proceeds unless a card is
+                            executing. A "nothing new" skip drops finished
+                            cards, standing in for the save's rewrite
 - POST /api/finance/apply   {items: [{transaction_id, category,
                             update_rule?, approx?}]}: resolve every category
                             name against the api-cache copy, then run one
@@ -91,14 +114,18 @@ Endpoints (HANDLERS; guards and dispatch live in server.py):
                             status still has a decision waiting. The
                             transaction is out of the uncategorized queue,
                             so no scan can propose it again
+- POST /api/finance/odd-seen  {transaction_id} takes one oddity off the
+                            page for good, {all: true} every queued one —
+                            out of the queue, into the seen file
 - POST /api/finance/ask     {to_addr, transaction_ids}: store a categorize
                             ask (every id must be an uncategorized queue
                             transaction, not covered by an open ask, at most
                             ASK_CAP) and return the numbered question lines
                             for the draft mail
 - POST /api/finance/email-cards  {email_id, email_subject, suggestions}:
-                            the email channel's finance action (run_action on
-                            the actions_inbox MCP server) — cards from one
+                            the email channel's finance action
+                            (create_cards_from_email on the
+                            actions_inbox MCP server) — cards from one
                             ping mail's content, pick "email". Every id must
                             be an uncategorized queue transaction, every
                             category a real one; the card's facts come from
@@ -118,48 +145,42 @@ Endpoints (HANDLERS; guards and dispatch live in server.py):
 
 import glob
 import json
-import os
 import pathlib
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta
 
 import common
 from common import _log, _now
 
 APP = pathlib.Path(__file__).resolve().parent
 IRIS = APP.parent.parent
+sys.path.append(str(IRIS / "services" / "mcp" / "actual"))
+import api_cache  # noqa: E402
+import cash_flow  # noqa: E402
+import oddities  # noqa: E402
+
 STATE_FILE = common.STATE_DIR / "finance.json"
 ASK_FILE = common.STATE_DIR / "finance-ask.json"
+ODD_FILE = common.STATE_DIR / "finance-oddities.json"
+ODD_SEEN_FILE = common.STATE_DIR / "finance-oddities-seen.json"
 
-# the write helper and the pinned node_modules it must run beside — same
-# paths and pattern as services/mcp/actual/server.py
-ACTUAL_APP = IRIS / "services" / "actual"
-API_CACHE = ACTUAL_APP / "api-cache"
-WRITE_MJS = IRIS / "services" / "mcp" / "actual" / "write.mjs"
-ACTUAL_CONFIG = pathlib.Path.home() / ".config/actual/env"
-NODE = "/Users/me/.local/bin/node"
-SERVER_URL = "http://127.0.0.1:60195"
-WRITE_TIMEOUT = 300
+# the api-cache copy — the same path services/mcp/actual/api_cache.py reads
+API_CACHE = pathlib.Path.home() / "Local" / "iris-actual-api-cache"
 
 # SCAN_JOB builds the batch (the page's scan key starts it detached);
-# DAILY_JOB only emails the report. The page's status line reads both
-DAILY_JOB = "finance-daily"
+# finance-daily only emails the report. The page's status line reads the
+# scan job only, so a report run never makes a stale list look fresh
 SCAN_JOB = "finance-uncategorized"
-CRON_JOBS = pathlib.Path.home() / ".hermes/cron/jobs.json"
-CRON_EXECUTIONS = pathlib.Path.home() / ".hermes/cron/executions.db"
 
-# the two picks the scan builds, each with its own slot count — the page
-# shows them as two groups
-LATEST_CAP = 5
-RANDOM_CAP = 5
-PICK_CAPS = {"latest": LATEST_CAP, "random": RANDOM_CAP}
-BATCH_CAP = LATEST_CAP + RANDOM_CAP
-# email cards (pick "email") come from the email channel's run_action, not
-# the scan — they ride the same batch list but outside the scan's caps
+# the scan's pick ("latest"): the newest uncategorized transactions
+LATEST_CAP = 10
+# email cards (pick "email") come from the email channel's
+# create_cards_from_email, not the scan — they ride the same batch list but outside the scan's cap
 EMAIL_CAP = 20
 SUGGESTION_CAP = 3
 STATUS_CAP = 300
@@ -180,9 +201,11 @@ ASK_DAYS = 14
 # open ask per recipient), never on a subject tag
 ASK_SUBJECT = "categorizing help"
 
-# the page's poll of /api/state stamps this; a scheduled save is held while
-# it is fresh, so a top-up never swaps the cards out mid-review. In memory
-# only — a restart means "never polled", so the next save lands.
+# the page's own poll of /api/state (the hold-update query flag) stamps
+# this via page_seen(); other pollers — the menu-bar app's badge count —
+# do not. A scheduled save is held while it is fresh and at least one card
+# is still pending, so a top-up never swaps the cards out mid-review. In
+# memory only — a restart means "never polled", so the next save lands.
 PAGE_ACTIVE_SECONDS = 900
 _PAGE_SEEN = 0.0
 
@@ -212,37 +235,42 @@ def empty_asks():
     return {"version": 1, "asks": {}}
 
 
+def empty_odd():
+    return {"version": 1, "ids": []}
+
+
 # boot() replaces these with the loaded files; the defaults keep state() safe
 # in tests that never boot the area
 STATE = empty_state()
 ASKS = empty_asks()
-
-
-def _write_json(path, obj):
-    """tmp file + fsync + os.replace + dir fsync, mode 0600. Caller holds LOCK."""
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(obj, f, indent=2)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    dfd = os.open(common.STATE_DIR, os.O_RDONLY)
-    try:
-        os.fsync(dfd)
-    finally:
-        os.close(dfd)
+ODD = empty_odd()
+ODD_SEEN = {}          # transaction id -> iso date of the transaction
+_ODD_ROWS = {}         # transaction id -> the page row built on the last poll
 
 
 def save_state(state):
     """Caller holds LOCK."""
-    _write_json(STATE_FILE, state)
+    common.write_json(STATE_FILE, state)
 
 
 def save_asks(asks):
     """Caller holds LOCK."""
-    _write_json(ASK_FILE, asks)
+    common.write_json(ASK_FILE, asks)
+
+
+def save_odd(odd):
+    """Caller holds LOCK."""
+    common.write_json(ODD_FILE, odd)
+
+
+def save_odd_seen(seen, today):
+    """The seen file, entries dated before the rules' window dropped first
+    — the same cutoff the window query uses, so a purged transaction is
+    never read again. Caller holds LOCK."""
+    cutoff = (today - timedelta(days=oddities.ODD_WINDOW_DAYS)).isoformat()
+    seen = {i: d for i, d in seen.items() if d >= cutoff}
+    common.write_json(ODD_SEEN_FILE, seen)
+    return seen
 
 
 def _find_card(state, transaction_id):
@@ -343,15 +371,6 @@ def _transaction_states(ids):
 
 
 # ---------------------------------------------------------------- ask reads
-
-def _dollars(cents):
-    return f"{(cents or 0) / 100:.2f}"
-
-
-def _iso(yyyymmdd):
-    s = str(yyyymmdd)
-    return f"{s[:4]}-{s[4:6]}-{s[6:]}"
-
 
 def _money(cents):
     return f"{'-' if cents < 0 else ''}${abs(cents) / 100:.2f}"
@@ -456,53 +475,6 @@ def open_asks_payload(referenced):
     return {"asks": out, "categories": _categories()}
 
 
-# ---------------------------------------------------------------- the write helper
-
-def _config():
-    """KEY=VALUE pairs from ACTUAL_CONFIG; raises when required keys are
-    missing. Same file the actual MCP server and hermes/actual/driver.py read."""
-    values = {}
-    try:
-        with open(ACTUAL_CONFIG, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                values[key.strip()] = value.strip().strip('"').strip("'")
-    except OSError:
-        pass
-    missing = [k for k in ("ACTUAL_PASSWORD", "ACTUAL_SYNC_ID") if not values.get(k)]
-    if missing:
-        raise RuntimeError(f"missing {', '.join(missing)} in {ACTUAL_CONFIG}")
-    return values
-
-
-def _run_write(command):
-    """Run write.mjs in a fresh Node process; returns {results, pushed}."""
-    cfg = _config()
-    env = dict(os.environ)
-    env.update({
-        "ACTUAL_SERVER_URL": cfg.get("ACTUAL_SERVER_URL", SERVER_URL),
-        "ACTUAL_PASSWORD": cfg["ACTUAL_PASSWORD"],
-        "ACTUAL_SYNC_ID": cfg["ACTUAL_SYNC_ID"],
-        "ACTUAL_CACHE_DIR": str(API_CACHE),
-    })
-    try:
-        result = subprocess.run([NODE, str(WRITE_MJS), json.dumps(command)],
-                                cwd=ACTUAL_APP, env=env, capture_output=True,
-                                text=True, timeout=WRITE_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"write helper timed out after {WRITE_TIMEOUT}s") from None
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(f"write helper failed: {detail[-1000:]}")
-    for line in result.stdout.splitlines():
-        if line.startswith("WRITE_RESULT "):
-            return json.loads(line[len("WRITE_RESULT "):])
-    raise RuntimeError(f"write helper returned no result JSON: {result.stdout[-500:]!r}")
-
-
 # ---------------------------------------------------------------- executor
 
 # the write helper's rule outcomes, spelled out for status text — shared by
@@ -534,7 +506,7 @@ def _work_items(work):
             elif approx:
                 op["approx"] = True
             ops.append(op)
-        out = _run_write({"cmd": "update", "ops": ops})
+        out = api_cache.run_budget_helper({"cmd": "update", "ops": ops})
         results, pushed, err = out["results"], out.get("pushed"), None
     except Exception as e:
         results, pushed, err = [], False, f"{type(e).__name__}: {e}"
@@ -567,7 +539,7 @@ def _work_items(work):
             _log({"event": "finance_card_resolved",
                   "transaction_id": transaction_id,
                   "args": {"category": cat_name},
-                  "outcome": status if status != "done" else "done",
+                  "outcome": status,
                   "result": text})
         save_state(STATE)
 
@@ -594,7 +566,7 @@ def categorize_one(transaction_id, category, update_rule):
         if not update_rule:
             op["rule"] = False
         try:
-            out = _run_write({"cmd": "update", "ops": [op]})
+            out = api_cache.run_budget_helper({"cmd": "update", "ops": [op]})
         except Exception as e:
             return "error", f"{type(e).__name__}: {e}"
         res = out["results"][0] if out["results"] else {}
@@ -613,62 +585,15 @@ def categorize_one(transaction_id, category, update_rule):
 
 # ---------------------------------------------------------------- API views
 
-def _job_record(jobs, name):
-    return next((j for j in jobs if j.get("name") == name), None)
-
-
-def _job_records():
-    """The finance-daily and finance-uncategorized entries from hermes' own jobs
-    file. Unreadable file -> two Nones."""
-    try:
-        jobs = json.loads(CRON_JOBS.read_text())["jobs"]
-    except (OSError, ValueError, KeyError):
-        return None, None
-    return _job_record(jobs, DAILY_JOB), _job_record(jobs, SCAN_JOB)
-
-
-def _job_running_since(job):
-    """Start time of a run going right now, from hermes' executions ledger —
-    same read as the emails area. Any read problem -> None."""
-    if not job or not job.get("id"):
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{CRON_EXECUTIONS}?mode=ro", uri=True,
-                               timeout=1)
-        try:
-            row = conn.execute(
-                "SELECT status, coalesce(started_at, claimed_at) "
-                "FROM executions WHERE job_id = ? "
-                "ORDER BY claimed_at DESC, id DESC LIMIT 1",
-                (job["id"],)).fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
-    if row and row[0] in ("claimed", "running"):
-        return row[1]
-    return None
-
-
 def _job_fields():
-    """last-run stamp (newest of the two jobs), the coming run (soonest of
-    the two), whether the last run failed, and the start time of a run
-    going right now."""
-    daily, scan = _job_records()
-    jobs = [j for j in (daily, scan) if j and j.get("last_run_at")]
-    newest = max(jobs, key=lambda j: j["last_run_at"], default=None)
-    nexts = [j["next_run_at"] for j in (daily, scan)
-             if j and j.get("next_run_at")]
-    running = _job_running_since(daily) or _job_running_since(scan)
-    return {"job_last_run_at": newest["last_run_at"] if newest else None,
-            "job_next_run_at": min(nexts, default=None),
-            "job_last_failed": bool(newest and newest.get("last_status")
+    """The scan job's last-run stamp, its coming run, whether that run
+    failed, and the start time of a run going right now."""
+    scan = common.cron_job(SCAN_JOB)
+    return {"job_last_run_at": scan.get("last_run_at") if scan else None,
+            "job_next_run_at": scan.get("next_run_at") if scan else None,
+            "job_last_failed": bool(scan and scan.get("last_status")
                                     not in (None, "ok")),
-            "job_running_since": running}
-
-
-def _card_view(c):
-    return dict(c)
+            "job_running_since": common.job_running_since(scan)}
 
 
 def _prune(state, states):
@@ -695,6 +620,59 @@ def _prune(state, states):
 
 # ---------------------------------------------------------------- handlers
 
+def _topup(current, candidates):
+    """What a scheduled save would land right now: pending cards stay, the
+    open scan slots take candidates not already listed (dicts with at least
+    transaction_id). Shared by save_batch and scan_check, so the scan's skip
+    decision can never drift from the save's."""
+    keep = [c for c in current if c["status"] == "pending"]
+    # an email card never suppresses a scan card for the same transaction —
+    # duplicate proposals across routes are accepted by choice
+    have = {c["transaction_id"] for c in keep if c["pick"] != "email"}
+    room = LATEST_CAP - len(have)
+    added = [c for c in candidates if c["transaction_id"] not in have][:room]
+    return keep, added
+
+
+def scan_check(state, body):
+    """POST /api/finance/scan-check: would a scheduled save land anything
+    right now? The scan asks with this run's candidate ids before its LLM
+    call, so a run whose slots are all filled — or whose candidates are all
+    already listed — skips the model call. Same decision path as save_batch
+    (the executing-card refusal, _topup, the page-open hold); a page-asked
+    rebuild proceeds unless a card is executing. A skipped run would never
+    reach save_batch's rewrite, so the skip itself drops finished cards —
+    the one write here. Caller holds LOCK."""
+    cands = body.get("candidates")
+    if not isinstance(cands, list) or not all(
+            isinstance(c, dict) and isinstance(c.get("transaction_id"), str)
+            and c["transaction_id"] and c.get("pick") == "latest"
+            for c in cands):
+        return 400, {"error": "candidates must be a list of objects with "
+                              "transaction_id (non-empty string) and pick "
+                              "latest"}
+    current = state["batch"]["cards"]
+    if any(c["status"] == "in_progress" for c in current):
+        return 200, {"proceed": False,
+                     "reason": "a card is executing — the save would be refused"}
+    if time.time() - _SCAN_REQUESTED <= SCAN_EXEMPT_SECONDS:
+        return 200, {"proceed": True, "reason": "rebuild asked from the page"}
+    if time.time() - _PAGE_SEEN < PAGE_ACTIVE_SECONDS \
+            and any(c["status"] == "pending" for c in current):
+        return 200, {"proceed": False,
+                     "reason": "the page is open — the save would be held"}
+    keep, added = _topup(current, cands)
+    if added:
+        return 200, {"proceed": True,
+                     "reason": f"{len(added)} card(s) would land"}
+    if len(keep) != len(current):
+        state["batch"] = {"cards": keep, "error": None, "saved_at": _now()}
+        _log({"event": "finance_batch_pruned",
+              "rows": [c["transaction_id"] for c in keep]})
+        save_state(state)
+    return 200, {"proceed": False, "reason": "slots full or nothing new"}
+
+
 def save_batch(state, body):
     """POST /api/finance/batch: replace the whole batch — cards from a good
     run, or an error record from a failed one. Caller holds LOCK."""
@@ -715,8 +693,8 @@ def save_batch(state, body):
         return 200, {"ok": True}
 
     cards = body.get("cards")
-    if not isinstance(cards, list) or len(cards) > BATCH_CAP:
-        return 400, {"error": f"cards must be a list of at most {BATCH_CAP}"}
+    if not isinstance(cards, list) or len(cards) > LATEST_CAP:
+        return 400, {"error": f"cards must be a list of at most {LATEST_CAP}"}
     stored = []
     for c in cards:
         if not isinstance(c, dict):
@@ -730,8 +708,8 @@ def save_batch(state, body):
         for k in ("payee", "notes"):
             if not isinstance(c.get(k, ""), str):
                 return 400, {"error": f"card {k} must be a string"}
-        if c.get("pick") not in PICK_CAPS:
-            return 400, {"error": "card pick must be latest or random"}
+        if c.get("pick") != "latest":
+            return 400, {"error": "card pick must be latest"}
         sugg = c.get("suggestions", [])
         if not isinstance(sugg, list) or len(sugg) > SUGGESTION_CAP:
             return 400, {"error": f"suggestions must be a list of at most {SUGGESTION_CAP}"}
@@ -750,9 +728,6 @@ def save_batch(state, body):
     ids = [c["transaction_id"] for c in stored]
     if len(set(ids)) != len(ids):
         return 400, {"error": "duplicate transaction_id in the batch"}
-    for pick, cap in PICK_CAPS.items():
-        if sum(1 for c in stored if c["pick"] == pick) > cap:
-            return 400, {"error": f"at most {cap} {pick} cards"}
     current = state["batch"]["cards"]
     if any(c["status"] == "in_progress" for c in current):
         return 409, {"error": "a card is executing — save again when it settles"}
@@ -768,19 +743,12 @@ def save_batch(state, body):
         return 200, {"ok": True, "count": len(stored)}
     # a scheduled run only tops up open slots — finished cards leave, pending
     # cards stay, new candidates (not already listed) fill the freed slots —
-    # and it waits while the page is open so cards never swap mid-review
-    if time.time() - _PAGE_SEEN < PAGE_ACTIVE_SECONDS:
+    # and it waits while the page is open with a review still possible (at
+    # least one pending card), so a card never swaps out from under a click
+    if time.time() - _PAGE_SEEN < PAGE_ACTIVE_SECONDS \
+            and any(c["status"] == "pending" for c in current):
         return 409, {"error": "the page is open — the batch stays as it is"}
-    keep = [c for c in current if c["status"] == "pending"]
-    # an email card never suppresses a scan card for the same transaction —
-    # duplicate proposals across routes are accepted by choice
-    have = {c["transaction_id"] for c in keep if c["pick"] != "email"}
-    # each pick fills its own slots, so the two groups keep their shape
-    added = []
-    for pick, cap in PICK_CAPS.items():
-        room = cap - sum(1 for c in keep if c["pick"] == pick)
-        added += [c for c in stored if c["pick"] == pick
-                  and c["transaction_id"] not in have][:room]
+    keep, added = _topup(current, stored)
     if not added and len(keep) == len(current):
         return 200, {"ok": True, "count": 0}   # no open slots, nothing new
     state["batch"] = {"cards": keep + added, "error": None, "saved_at": _now()}
@@ -796,9 +764,9 @@ def apply(state, body):
     holds LOCK; the write runs in its own thread after in_progress is
     persisted."""
     items = body.get("items")
-    if not isinstance(items, list) or not 1 <= len(items) <= BATCH_CAP + EMAIL_CAP:
+    if not isinstance(items, list) or not 1 <= len(items) <= LATEST_CAP + EMAIL_CAP:
         return 400, {"error": f"items must be a list of 1 to "
-                              f"{BATCH_CAP + EMAIL_CAP}"}
+                              f"{LATEST_CAP + EMAIL_CAP}"}
     # one apply call at a time area-wide — the page disables the apply keys
     # while one works; this 409 is the real rule (second tab, curl)
     if any(cc["status"] == "in_progress" for cc in state["batch"]["cards"]):
@@ -848,8 +816,8 @@ def skip(state, body):
     duplicated transaction goes. {pick: "email"} alone is the page's
     hide-all key: every email card not executing goes. Caller holds LOCK."""
     pick = body.get("pick")
-    if pick not in ("latest", "random", "email"):
-        return 400, {"error": "pick must be latest, random, or email"}
+    if pick not in ("latest", "email"):
+        return 400, {"error": "pick must be latest or email"}
     tid = body.get("transaction_id")
     if tid is None:
         if pick != "email":
@@ -958,10 +926,10 @@ def create_ask(body):
         items, lines = [], []
         for n, i in enumerate(ids, 1):
             r = rows[i]
-            items.append({"n": n, "transaction_id": i, "date": _iso(r["date"]),
-                          "payee": r["payee"], "amount": _dollars(r["amount"]),
+            items.append({"n": n, "transaction_id": i, "date": cash_flow._iso(r["date"]),
+                          "payee": r["payee"], "amount": cash_flow._dollars(r["amount"]),
                           "account": r["account"], "notes": r["notes"]})
-            lines.append(f"{n}) {_human_date(_iso(r['date']))} · "
+            lines.append(f"{n}) {_human_date(cash_flow._iso(r['date']))} · "
                          f"{r['payee'] or '(no payee)'} · {_money(r['amount'])}")
         ASKS["asks"][ask_id] = {"ask_id": ask_id,
                                 "to_addr": to_addr.strip().lower(),
@@ -976,8 +944,8 @@ def create_ask(body):
 
 def create_email_cards(body):
     """POST /api/finance/email-cards: the email channel's finance action —
-    cards proposed from one ping mail's content (run_action on the
-    actions_inbox MCP server). The caller supplies (transaction_id,
+    cards proposed from one ping mail's content (create_cards_from_email
+    on the actions_inbox MCP server). The caller supplies (transaction_id,
     category) pairs plus the source mail's id and subject for the page.
     Every id must be an uncategorized queue transaction and every category
     a real one; the card's facts come from the budget copy here, never
@@ -1048,8 +1016,8 @@ def create_email_cards(body):
                                            f"({EMAIL_CAP}) — apply or skip some first"})
                 continue
             stored.append({"transaction_id": transaction_id,
-                           "date": _iso(r["date"]), "payee": r["payee"],
-                           "amount": _dollars(r["amount"]), "notes": r["notes"],
+                           "date": cash_flow._iso(r["date"]), "payee": r["payee"],
+                           "amount": cash_flow._dollars(r["amount"]), "notes": r["notes"],
                            "account": r["account"], "account_id": r["account_id"],
                            "pick": "email",
                            "source": {"email_id": email_id, "subject": subject},
@@ -1070,7 +1038,7 @@ def create_email_cards(body):
 def create_category(body):
     """POST /api/finance/create-category: create {name} in group {group}
     through the write helper — fresh budget download, duplicate and group
-    checks against it (in write.mjs), sync. Runs in the request thread (the
+    checks against it (in budget_helper.mjs), sync. Runs in the request thread (the
     page's accept key stays grey until it settles); takes LOCK only around
     the single-flight flag, so a poll never queues behind the write."""
     global _HELPER_BUSY
@@ -1090,7 +1058,7 @@ def create_category(body):
             return 409, {"error": "another write is running"}
         _HELPER_BUSY = True
     try:
-        out = _run_write({"cmd": "update", "ops": [
+        out = api_cache.run_budget_helper({"cmd": "update", "ops": [
             {"op": "create_category", "name": name, "group": group}]})
     except Exception as e:
         return 500, {"error": f"{type(e).__name__}: {e}"}
@@ -1123,7 +1091,7 @@ def uncategorized():
             return 409, {"error": "another write is running"}
         _HELPER_BUSY = True
     try:
-        _run_write({"cmd": "refresh"})
+        api_cache.run_budget_helper({"cmd": "pull"})
     except Exception as e:
         return 500, {"error": f"budget refresh failed — {type(e).__name__}: {e}"}
     finally:
@@ -1148,12 +1116,12 @@ NAME = "finance"
 
 def boot():
     """Load the state file and settle cards a crash left in_progress: the
-    api-cache copy is current after any landed write (write.mjs downloads
+    api-cache copy is current after any landed write (budget_helper.mjs downloads
     the budget into it before applying), so categorized there = the write
     landed (done), still open = it did not (back to pending). An unreadable
     copy leaves the card in_progress for the next boot. Also loads the ask
     store (no settle needed — the payload build prunes it)."""
-    global STATE, ASKS
+    global STATE, ASKS, ODD, ODD_SEEN
     STATE = load_state()
     if STATE is None:
         STATE = empty_state()
@@ -1164,6 +1132,15 @@ def boot():
         ASKS = empty_asks()
         with LOCK:
             save_asks(ASKS)
+    ODD = load_odd()
+    if ODD is None:
+        ODD = empty_odd()
+        with LOCK:
+            save_odd(ODD)
+    ODD_SEEN = load_odd_seen()
+    if ODD_SEEN is None:
+        with LOCK:
+            ODD_SEEN = save_odd_seen({}, date.today())
     stuck = [c["transaction_id"] for c in STATE["batch"]["cards"]
              if c["status"] == "in_progress"]
     if not stuck:
@@ -1199,6 +1176,84 @@ def load_asks():
     return json.loads(ASK_FILE.read_text())
 
 
+def load_odd():
+    """None when no oddities file exists."""
+    if not ODD_FILE.exists():
+        return None
+    return json.loads(ODD_FILE.read_text())
+
+
+def load_odd_seen():
+    """None when no seen file exists."""
+    if not ODD_SEEN_FILE.exists():
+        return None
+    return json.loads(ODD_SEEN_FILE.read_text())
+
+
+# ---------------------------------------------------------------- oddities
+
+def _oddities(today):
+    """The page's oddities rows: run the rules over the window plus the
+    queue, queue what is flagged and neither queued nor seen, drop queued
+    ids the rules no longer flag, and build one row per queued transaction
+    (reasons in rule order). An unreadable copy leaves the queue alone and
+    returns the rows of the last poll."""
+    global _ODD_ROWS
+    with LOCK:
+        queued = list(ODD["ids"])
+    try:
+        flags = oddities.odd_candidates(_db(), today, ids=queued)
+    except (RuntimeError, sqlite3.Error):
+        return [_ODD_ROWS[i] for i in queued if i in _ODD_ROWS]
+    by_id = {}
+    for f in flags:
+        by_id.setdefault(f["transaction_id"], []).append(f)
+    with LOCK:
+        ids = [i for i in queued if i in by_id and i not in ODD_SEEN]
+        ids += [i for i in by_id if i not in ids and i not in ODD_SEEN]
+        if ids != ODD["ids"]:
+            ODD["ids"] = ids
+            save_odd(ODD)
+        rows = {}
+        for i in ids:
+            f = by_id[i][0]
+            rows[i] = {"transaction_id": i, "date": cash_flow._iso(f["date"]),
+                       "payee": f["payee"], "amount": cash_flow._dollars(f["amount"]),
+                       "account": f["account"],
+                       "reasons": [x["reason"] for x in by_id[i]]}
+        _ODD_ROWS = rows
+    return sorted(rows.values(), key=lambda r: r["date"], reverse=True)
+
+
+def odd_seen(body):
+    """POST /api/finance/odd-seen: queued oddities off the page for good —
+    {transaction_id} for one, {all: true} for every queued one. A seen
+    entry carries the transaction's date (today when the row is not on
+    hand), which is what the purge reads."""
+    global ODD_SEEN
+    today = date.today()
+    with LOCK:
+        if body.get("all") is True:
+            drop = list(ODD["ids"])
+        elif isinstance(body.get("transaction_id"), str):
+            if body["transaction_id"] not in ODD["ids"]:
+                return 404, {"error": f"unknown oddity {body['transaction_id']!r}"}
+            drop = [body["transaction_id"]]
+        else:
+            return 400, {"error": "pass transaction_id or all: true"}
+        if not drop:
+            return 200, {"seen": []}
+        ODD["ids"] = [i for i in ODD["ids"] if i not in drop]
+        save_odd(ODD)
+        for tid in drop:
+            row = _ODD_ROWS.pop(tid, None)
+            ODD_SEEN[tid] = row["date"] if row else today.isoformat()
+            _log({"event": "finance_oddity_seen", "transaction_id": tid,
+                  "result": " · ".join(row["reasons"]) if row else ""})
+        ODD_SEEN = save_odd_seen(ODD_SEEN, today)
+    return 200, {"seen": drop}
+
+
 def _open_asks_summary():
     """Open, unexpired categorize asks for the page's finance area —
     recipient, created date, item count. A plain read: no pruning, no
@@ -1210,14 +1265,21 @@ def _open_asks_summary():
                 if a["state"] == "open" and not _ask_expired(a)]
 
 
-def state():
-    """The finance part of GET /api/state: the batch (pruned against the
-    api-cache copy), the uncategorized count, the picker's category list, and
-    the jobs' stamps. The sqlite and jobs-file reads run outside LOCK, so a
-    poll never queues an apply behind their I/O. Only the page polls this, so
-    the call itself is the page-open signal a scheduled save's hold honors."""
+def page_seen():
+    """The page-open stamp: server.py calls this on GET /api/state carrying
+    the hold-update flag (the page's own poll). A scheduled batch save is
+    held while the stamp is fresh and at least one card is still pending."""
     global _PAGE_SEEN
     _PAGE_SEEN = time.time()
+
+
+def state():
+    """The finance part of GET /api/state: the batch (pruned against the
+    api-cache copy), the uncategorized count, the picker's category list,
+    the oddities rows, and the jobs' stamps. The sqlite and jobs-file reads run outside LOCK, so a
+    poll never queues an apply behind their I/O. More than the page polls
+    this (the menu-bar app's badge count), so the call itself is not the
+    page-open signal — page_seen() is."""
     with LOCK:
         pending = [c["transaction_id"] for c in STATE["batch"]["cards"]
                    if c["status"] == "pending"]
@@ -1225,12 +1287,13 @@ def state():
     with LOCK:
         if states:
             _prune(STATE, states)
-        out = {"cards": [_card_view(c) for c in STATE["batch"]["cards"]],
+        out = {"cards": [dict(c) for c in STATE["batch"]["cards"]],
                "error": STATE["batch"]["error"],
                "saved_at": STATE["batch"]["saved_at"]}
     out["uncategorized"] = _uncategorized_count()
     out["categories"] = _categories()
     out["open_asks"] = _open_asks_summary()
+    out["oddities"] = _oddities(date.today())
     out.update(_job_fields())
     return out
 
@@ -1238,6 +1301,11 @@ def state():
 def _h_batch(body):
     with LOCK:
         return save_batch(STATE, body)
+
+
+def _h_scan_check(body):
+    with LOCK:
+        return scan_check(STATE, body)
 
 
 def _h_apply(body):
@@ -1263,8 +1331,11 @@ def _h_uncategorized(body):
     return uncategorized()
 
 
-HANDLERS = {"/api/finance/batch": _h_batch, "/api/finance/apply": _h_apply,
+HANDLERS = {"/api/finance/batch": _h_batch,
+            "/api/finance/scan-check": _h_scan_check,
+            "/api/finance/apply": _h_apply,
             "/api/finance/skip": _h_skip, "/api/finance/hide": _h_hide,
+            "/api/finance/odd-seen": odd_seen,
             "/api/finance/ask": create_ask,
             "/api/finance/email-cards": create_email_cards,
             "/api/finance/create-category": _h_create_category,

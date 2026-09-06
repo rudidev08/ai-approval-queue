@@ -8,6 +8,7 @@
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import urllib.request
@@ -15,6 +16,7 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 JOBS_FILE = os.path.expanduser("~/.hermes/cron/jobs.json")
+EXECUTIONS = os.path.expanduser("~/.hermes/cron/executions.db")
 CMD_TIMEOUT = 10
 HTTP_TIMEOUT = 4
 OVERDUE_GRACE_MIN = 15
@@ -166,12 +168,37 @@ def _last_restart(log):
     return "last %s" % _age((NOW - ts).total_seconds())
 
 
+def _check_status_file(item, parts, bad):
+    # A daemon launchd does not own: it writes its own pid, state and version
+    # into a status file. The pid is checked against the process table, so a
+    # status file left behind by a dead process still reads as not running.
+    try:
+        with open(os.path.expanduser(item["status_file"])) as f:
+            st = json.load(f)
+    except (OSError, ValueError) as e:
+        bad.append("status file unreadable (%s)" % e)
+        return
+    pid = str(st.get("pid", ""))
+    if not pid or not _run("ps", "-o", "pid=", "-p", pid).strip():
+        bad.append("NOT RUNNING (pid %s)" % (pid or "none"))
+        return
+    parts.append("up %s" % _uptime(_run("ps", "-o", "etime=", "-p", pid)))
+    if st.get("status") != "connected":
+        bad.append("status %s" % st.get("status"))
+    parts.append("v%s" % st.get("version", "?"))
+
+
 def _check_service(item, launchd, problems):
     parts, bad = [], []
     if "launchd" in item:
         pid, exit_st = launchd.get(item["launchd"], (None, None))
         if pid is None:
             bad.append("NOT LOADED in launchd")
+        elif "status_file" in item:
+            # the launchd job is only the watchdog that restarts the daemon,
+            # so it is idle between runs; the daemon is checked on its own
+            if pid == "-" and exit_st != "0":
+                bad.append("watchdog last run FAILED (exit %s)" % exit_st)
         elif item.get("event"):
             # short-lived WatchPaths job: idle is its normal state, so only
             # the last completed restart is reported
@@ -183,6 +210,8 @@ def _check_service(item, launchd, problems):
         else:
             up = _uptime(_run("ps", "-o", "etime=", "-p", pid))
             parts.append("up %s" % up)
+    if "status_file" in item:
+        _check_status_file(item, parts, bad)
     detail_extra = None
     if "http" in item:
         code, err = _http(item["http"])
@@ -229,15 +258,12 @@ def _newest_files(item, has_run, problems):
     # one job can write several backup files; each is checked on its own so a
     # single stale or missing one is named rather than hidden behind the others
     paths = item["newest_files"]
-    ages, missing, stale = [], 0, 0
+    ages, missing, stale = [], [], 0
     for p in paths:
         try:
             mtime = os.path.getmtime(os.path.expanduser(p))
         except OSError:
-            missing += 1
-            if has_run:
-                problems.append("%s: backup file missing (%s)"
-                                % (item["name"], p))
+            missing.append(p)
             continue
         age_s = (NOW - datetime.fromtimestamp(mtime).astimezone()
                  ).total_seconds()
@@ -245,14 +271,43 @@ def _newest_files(item, has_run, problems):
         if has_run and age_s > item["max_file_age_h"] * 3600:
             stale += 1
             problems.append("%s: %s is %s old" % (item["name"], p, _age(age_s)))
+    if not ages:
+        # every file absent: a fresh machine before the job's first run here
+        if has_run:
+            problems.append("%s: first backup not run" % item["name"])
+        return "first backup not run", has_run
+    if has_run:
+        for p in missing:
+            problems.append("%s: backup file missing (%s)" % (item["name"], p))
     parts = ["%d files" % len(paths)]
     if missing:
-        parts.append("%d MISSING" % missing)
-    parts.append("oldest %s ago" % _age(max(ages)) if ages else "none written")
+        parts.append("%d MISSING" % len(missing))
+    parts.append("oldest %s ago" % _age(max(ages)))
     return ", ".join(parts), bool(has_run and (missing or stale))
 
 
-def _check_cron(item, jobs, problems):
+def _running_job_ids():
+    """Job ids whose newest attempt in hermes' executions ledger is still
+    claimed/running. Any read problem -> empty set, so the checks run as if
+    nothing were running."""
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % EXECUTIONS, uri=True,
+                               timeout=1)
+        try:
+            rows = conn.execute(
+                "SELECT job_id, status FROM executions "
+                "ORDER BY claimed_at DESC, id DESC").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return set()
+    newest = {}
+    for job_id, status in rows:
+        newest.setdefault(job_id, status)
+    return {j for j, s in newest.items() if s in ("claimed", "running")}
+
+
+def _check_cron(item, jobs, running, problems):
     job = jobs.get(item["name"])
     if job is None:
         problems.append("%s: in manifest, not in hermes cron" % item["name"])
@@ -275,8 +330,13 @@ def _check_cron(item, jobs, problems):
                      else "never ran")
     file_stale = False
     if "newest_files" in item:
-        note, file_stale = _newest_files(item, has_run, problems)
-        parts.append(note)
+        # mid-run the job deletes and rewrites its files, so checking them
+        # now would flag missing/stale files that are simply being written
+        if job.get("id") in running:
+            parts.append("run in progress")
+        else:
+            note, file_stale = _newest_files(item, has_run, problems)
+            parts.append(note)
     for b in bad:
         problems.append("%s: %s" % (item["name"], b))
     state = "!!" if bad or file_stale else ("ok" if has_run else "--")
@@ -294,6 +354,7 @@ def collect():
     except OSError:
         jobs = {}
     launchd = _launchd_table()
+    running = _running_job_ids()
     problems = []
     categories = []
     manifest_cron_names = set()
@@ -305,7 +366,7 @@ def collect():
                 state, detail = _check_service(item, launchd, problems)
             else:
                 manifest_cron_names.add(item["name"])
-                state, detail = _check_cron(item, jobs, problems)
+                state, detail = _check_cron(item, jobs, running, problems)
             rows.append({"name": item["name"], "desc": item["desc"],
                          "kind": kind, "state": state, "detail": detail})
         categories.append({"name": cat["name"], "items": rows})

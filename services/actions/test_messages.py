@@ -99,9 +99,13 @@ class AreaCase(unittest.TestCase):
         with messages.LOCK:
             return messages.save_batch(messages.STATE, body)
 
-    def resolve(self, body):
+    def deny(self, body):
         with messages.LOCK:
-            return messages.resolve(messages.STATE, body)
+            return messages.deny(messages.STATE, body)
+
+    def apply(self, body):
+        with messages.LOCK:
+            return messages.apply(messages.STATE, body)
 
 
 # ---------------------------------------------------------------- parsers
@@ -190,7 +194,7 @@ class TestCandidates(AreaCase):
     def fake_tools(self, extra_env=""):
         env = pathlib.Path(self._tmp.name) / "messages.env"
         env.write_text("MESSAGES_CHATS=partner=+15555550123\n" + extra_env)
-        calls = {"list_attachments": [], "read_chat": [], "export_attachment": []}
+        calls = {"list_attachments": [], "read_chat": [], "export_attachment_to_inbox": []}
 
         def fake_messages(tool, args):
             calls[tool].append(args)
@@ -198,7 +202,7 @@ class TestCandidates(AreaCase):
                 return True, ATT_PAGE.format(new=ts(0), mid=ts(1), old=ts(4))
             if tool == "read_chat":
                 return True, CHAT_PAGE.format(new=ts(0), old=ts(1))
-            if tool == "export_attachment":
+            if tool == "export_attachment_to_inbox":
                 name = f"att-{args['attachment_id']}.pdf"
                 return True, (f"SUCCESS: copied to inbox/{name} — file it with "
                               f"records save_file (source_path 'inbox/{name}').")
@@ -222,7 +226,7 @@ class TestCandidates(AreaCase):
         with env, msgs, recs:
             out = messages._build_candidates()
         ids = [c["attachment_id"] for c in out["candidates"]]
-        # 102 is the user's own, 103 is older than the 72 h lookback
+        # 102 is Alex's own, 103 is older than the 72 h lookback
         self.assertEqual(ids, [101])
         self.assertIn("lab results", out["candidates"][0]["context"])
         # the sender resolved through contacts, the text through the records
@@ -310,6 +314,55 @@ class TestCandidates(AreaCase):
         # never a third call
         self.assertEqual(offsets, [0, 3])
         self.assertEqual([e["id"] for e in out], [1, 2, 3, 4, 5])
+
+    def test_nearby_paging_stops_on_last_elements_timestamp(self):
+        """Three pages, three entries each; the reported total (20) is far
+        above the 9 entries actually paged through, so only the last
+        element's timestamp per page can end the loop — kills the
+        page[1]/page[-2] mutants (an interior entry's timestamp wrongly
+        ending the scan early) and the offset -=/reset mutants."""
+        ts_pages = {
+            0: ["2026-08-19 08:00:00", "2026-08-19 06:00:00", "2026-08-19 04:00:00"],
+            3: ["2026-08-18 08:00:00", "2026-08-18 06:00:00", "2026-08-18 04:00:00"],
+            6: ["2026-08-17 08:00:00", "2026-08-17 06:00:00", "2026-08-17 04:00:00"],
+        }
+        calls = []
+
+        def fake(tool, args):
+            calls.append(dict(args))
+            entries = ts_pages.get(args.get("offset"))
+            if entries is None:
+                return True, "Chat c1: 0 messages, newest first.\n\n(no messages)"
+            header = (f"Chat c1: 20 messages, newest first. Showing {len(entries)} "
+                      f"from offset {args['offset']}.\n\n")
+            body = "".join(f"- {t} — s\n  m\n" for t in entries)
+            return True, header + body
+
+        with mock.patch.object(messages, "call_messages", fake):
+            out = messages._nearby("c1", "2026-08-17 04:00:00")
+        self.assertEqual(calls, [
+            {"chat": "c1", "limit": 200, "offset": 0},
+            {"chat": "c1", "limit": 200, "offset": 3},
+            {"chat": "c1", "limit": 200, "offset": 6},
+        ])
+        self.assertEqual(len(out), 9)
+        self.assertEqual(out[-1]["ts"], "2026-08-17 04:00:00")
+
+    def test_nearby_stops_when_history_runs_out_before_reaching_oldest(self):
+        """The chat's own history ends (an empty page) before the oldest
+        candidate timestamp is covered. The empty-page check must
+        short-circuit before the timestamp lookup, which would otherwise
+        index into an empty list."""
+        def fake(tool, args):
+            if args["offset"] == 0:
+                return True, ("Chat c1: 5 messages, newest first.\n\n"
+                              "- 2026-08-19 08:00:00 — s\n  m\n"
+                              "- 2026-08-19 06:00:00 — s\n  m\n")
+            return True, "Chat c1: 5 messages, newest first.\n\n(no messages)"
+
+        with mock.patch.object(messages, "call_messages", fake):
+            out = messages._nearby("c1", "2000-01-01 00:00:00")
+        self.assertEqual(len(out), 2)
 
     def test_candidates_409_while_busy_and_flag_clears_on_error(self):
         messages._SCAN_BUSY = True
@@ -530,50 +583,101 @@ class TestBatch(AreaCase):
         self.assertEqual(sorted(messages.STATE["ledger"]), ["2"])
 
 
-# ---------------------------------------------------------------- resolve
+# ---------------------------------------------------------------- deny + apply
 
-class TestResolve(AreaCase):
+class TestDeny(AreaCase):
     def setUp(self):
         super().setUp()
         self.batch({"cards": [dict(CARD)], "ignored": []})
 
     def test_deny_drops_the_card(self):
-        code, _ = self.resolve({"attachment_id": 101, "decision": "deny"})
+        code, _ = self.deny({"attachment_id": 101})
         self.assertEqual(code, 200)
         self.assertEqual(messages.STATE["cards"], [])
         # the ledger entry keeps it from ever coming back
         self.assertIn("101", messages.STATE["ledger"])
 
-    def test_approve_runs_and_validates_location(self):
-        code, _ = self.resolve({"attachment_id": 101, "decision": "approve",
-                                "location_id": "nope"})
-        self.assertEqual(code, 400)
-        spawns = []
-        with mock.patch.object(messages, "_spawn",
-                               lambda a, l: spawns.append((a, l))):
-            code, _ = self.resolve({"attachment_id": 101, "decision": "approve",
-                                    "location_id": "alex-health"})
-        self.assertEqual(code, 202)
-        self.assertEqual(spawns, [(101, "alex-health")])
-        self.assertEqual(messages.STATE["cards"][0]["status"], "in_progress")
-
-    def test_approve_needs_a_pending_or_failed_card(self):
-        messages.STATE["cards"][0]["status"] = "success"
-        code, _ = self.resolve({"attachment_id": 101, "decision": "approve",
-                                "location_id": "alex-health"})
+    def test_executing_card_is_refused(self):
+        messages.STATE["cards"][0]["status"] = "in_progress"
+        code, _ = self.deny({"attachment_id": 101})
         self.assertEqual(code, 409)
 
-    def test_second_approve_refused_while_one_executes(self):
-        self.batch({"cards": [dict(CARD, attachment_id=202, filename="b.pdf")],
+
+class TestApply(AreaCase):
+    def setUp(self):
+        super().setUp()
+        self.batch({"cards": [dict(CARD),
+                              dict(CARD, attachment_id=202, filename="b.pdf")],
                     "ignored": []})
-        messages.STATE["cards"][0]["status"] = "in_progress"
+
+    def apply_spawning(self, body):
         spawns = []
-        with mock.patch.object(messages, "_spawn",
-                               lambda a, l: spawns.append((a, l))):
-            code, _ = self.resolve({"attachment_id": 202, "decision": "approve",
-                                    "location_id": "alex-health"})
+        with mock.patch.object(messages, "_spawn", spawns.append):
+            code, out = self.apply(body)
+        return code, out, spawns
+
+    def test_one_item_runs_and_validates_location(self):
+        code, _, spawns = self.apply_spawning(
+            {"items": [{"attachment_id": 101, "location_id": "nope"}]})
+        self.assertEqual(code, 400)
+        self.assertEqual(spawns, [])
+        code, out, spawns = self.apply_spawning(
+            {"items": [{"attachment_id": 101, "location_id": "alex-health"}]})
+        self.assertEqual(code, 202)
+        self.assertEqual(out["count"], 1)
+        self.assertEqual(spawns, [[(101, "alex-health")]])
+        self.assertEqual(messages.STATE["cards"][0]["status"], "in_progress")
+        self.assertEqual(messages.STATE["cards"][1]["status"], "pending")
+
+    def test_many_items_run_in_one_thread_in_order(self):
+        code, out, spawns = self.apply_spawning(
+            {"items": [{"attachment_id": 202, "location_id": "partner-medical"},
+                       {"attachment_id": 101, "location_id": "alex-health"}]})
+        self.assertEqual(code, 202)
+        self.assertEqual(out["count"], 2)
+        self.assertEqual(spawns, [[(202, "partner-medical"),
+                                   (101, "alex-health")]])
+        self.assertEqual([c["status"] for c in messages.STATE["cards"]],
+                         ["in_progress", "in_progress"])
+
+    def test_one_bad_item_refuses_the_whole_call(self):
+        code, _, spawns = self.apply_spawning(
+            {"items": [{"attachment_id": 101, "location_id": "alex-health"},
+                       {"attachment_id": 999, "location_id": "alex-health"}]})
+        self.assertEqual(code, 404)
+        self.assertEqual(spawns, [])
+        self.assertEqual([c["status"] for c in messages.STATE["cards"]],
+                         ["pending", "pending"])
+        code, _, _ = self.apply_spawning(
+            {"items": [{"attachment_id": 101, "location_id": "alex-health"},
+                       {"attachment_id": 101, "location_id": "alex-health"}]})
+        self.assertEqual(code, 400)
+        code, _, _ = self.apply_spawning({"items": []})
+        self.assertEqual(code, 400)
+
+    def test_needs_a_pending_or_failed_card(self):
+        messages.STATE["cards"][0]["status"] = "success"
+        code, _, _ = self.apply_spawning(
+            {"items": [{"attachment_id": 101, "location_id": "alex-health"}]})
+        self.assertEqual(code, 409)
+        messages.STATE["cards"][0]["status"] = "run_failed"
+        code, _, _ = self.apply_spawning(
+            {"items": [{"attachment_id": 101, "location_id": "alex-health"}]})
+        self.assertEqual(code, 202)
+
+    def test_refused_while_one_executes(self):
+        messages.STATE["cards"][0]["status"] = "in_progress"
+        code, _, spawns = self.apply_spawning(
+            {"items": [{"attachment_id": 202, "location_id": "alex-health"}]})
         self.assertEqual(code, 409)
         self.assertEqual(spawns, [])
+
+    def test_run_executes_each_item_in_order(self):
+        seen = []
+        with mock.patch.object(messages, "_execute",
+                               lambda a, l: seen.append((a, l))):
+            messages._run([(202, "partner-medical"), (101, "alex-health")])
+        self.assertEqual(seen, [(202, "partner-medical"), (101, "alex-health")])
 
 
 class TestHide(AreaCase):
@@ -678,11 +782,14 @@ class TestExecute(AreaCase):
 class TestReset(AreaCase):
     def test_reset_clears_the_ledger_and_the_cards(self):
         self.batch({"cards": [dict(CARD)], "ignored": [202]})
+        messages.STATE["locations"] = [{"id": 7, "name": "Family"}]
         with messages.LOCK:
             code, out = messages.reset(messages.STATE, {})
         self.assertEqual((code, out["cleared"], out["dropped"]), (200, 2, 1))
         self.assertEqual(messages.STATE["ledger"], {})
         self.assertEqual(messages.STATE["cards"], [])
+        # the locations cache stays: a run in flight still posts its batch
+        self.assertEqual(messages.STATE["locations"], [{"id": 7, "name": "Family"}])
 
     def test_reset_is_refused_while_a_card_executes(self):
         self.batch({"cards": [dict(CARD)], "ignored": []})
@@ -712,8 +819,8 @@ class TestScanRequest(AreaCase):
 class TestJobFields(AreaCase):
     def test_missing_files_give_nones(self):
         absent = pathlib.Path(self._tmp.name) / "nope"
-        with mock.patch.object(messages, "CRON_JOBS", absent), \
-                mock.patch.object(messages, "CRON_EXECUTIONS", absent):
+        with mock.patch.object(common, "CRON_JOBS", absent), \
+                mock.patch.object(common, "CRON_EXECUTIONS", absent):
             out = messages._job_fields()
         self.assertEqual(out, {"job_last_run_at": None,
                                "job_next_run_at": None,
@@ -728,8 +835,8 @@ class TestJobFields(AreaCase):
              "next_run_at": "2026-08-17T13:41:00-07:00",
              "last_status": "ok"}]}))
         absent = pathlib.Path(self._tmp.name) / "nope.db"
-        with mock.patch.object(messages, "CRON_JOBS", jobs), \
-                mock.patch.object(messages, "CRON_EXECUTIONS", absent):
+        with mock.patch.object(common, "CRON_JOBS", jobs), \
+                mock.patch.object(common, "CRON_EXECUTIONS", absent):
             out = messages._job_fields()
         self.assertEqual(out["job_last_run_at"], "2026-08-17T06:41:00-07:00")
         self.assertEqual(out["job_next_run_at"], "2026-08-17T13:41:00-07:00")

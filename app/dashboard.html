@@ -22,9 +22,10 @@
      area tile shows that area alone; the choice sticks in localStorage per
      device. A strip of icon+count chips pins under the bar while the tiles
      are scrolled out of view.
-     The work layer is seven areas under slim header rows: services, jobs,
-     mcp, models, tools (last calls + the catalogue), sessions (by model +
-     by surface), links. -->
+     The work layer is six areas under slim header rows: services, mcp,
+     models, tools (last calls + the catalogue), sessions (by model +
+     by surface), links. Cron jobs live on the actions page's jobs tab —
+     everything with interactive keys belongs there. -->
 <link rel="stylesheet" href="tap-feedback.css">
 <style>
 /* Sans-serif labels and headings with monospace kept for identifiers and
@@ -129,7 +130,7 @@ body {
 
 /* ---- the glance layer: narrow area tiles --------------------------------
    Same component as the actions page: 2-3 per row on a phone, the last row
-   may wrap. Count = issues (services, jobs, mcp) or the day's activity
+   may wrap. Count = issues (services, mcp) or the day's activity
    (tools, sessions); shorthand status under it, amber when wrong.
    The "all" tile holds the issue total and stacks every area. */
 
@@ -158,7 +159,6 @@ body {
 .atile.sel { border: 2px solid var(--ac); padding: 7px 10px 5px; }
 .atile.all { --ac: var(--tool); }
 .atile.services { --ac: var(--green); }
-.atile.jobs { --ac: var(--s1); }
 .atile.mcp { --ac: var(--s2); }
 .atile.models { --ac: var(--brand); }
 .atile.tools { --ac: var(--s3); }
@@ -188,7 +188,6 @@ body {
 .schip.on { border-color: var(--ac); color: var(--ink); }
 .schip.all { --ac: var(--tool); }
 .schip.services { --ac: var(--green); }
-.schip.jobs { --ac: var(--s1); }
 .schip.mcp { --ac: var(--s2); }
 .schip.models { --ac: var(--brand); }
 .schip.tools { --ac: var(--s3); }
@@ -208,7 +207,6 @@ body {
 .a-ic { display: grid; place-items: center; align-self: center; flex: none; }
 .a-ic .svg-icon { width: 14px; height: 14px; stroke-width: 2.2; }
 .a-ic.services { color: var(--green); }
-.a-ic.jobs { color: var(--s1); }
 .a-ic.mcp { color: var(--s2); }
 .a-ic.models { color: var(--brand); }
 .a-ic.tools { color: var(--s3); }
@@ -240,45 +238,37 @@ body {
 .stat .d { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 .seg { display: flex; gap: 1px; width: 64px; align-self: center; }
 
-/* ---- models ------------------------------------------------------------- */
+/* ---- models -------------------------------------------------------------
+   One block per model on every screen: name with source and size on the
+   first line, each profile's roles inline on the next. Everything wraps,
+   so no column has to stretch to the tallest role list. */
 
-#models { display: grid; column-gap: 2.4ch;
-  grid-template-columns: max-content minmax(0,1fr) max-content repeat(2, max-content); }
-.modelrow {
-  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
-  gap: 2.4ch; align-items: baseline; padding: 6px 18px;
-}
+.modelrow { padding: 7px 18px; }
 .modelrow:hover { background: var(--band); }
-.mrole { color: var(--sub); white-space: nowrap; }
-/* runs outside the grid: a spanning item this long would inflate the
-   content-sized tracks and push the table past the screen's width */
+.mhead { display: flex; align-items: baseline; flex-wrap: wrap;
+  column-gap: 1.6ch; }
+.mhead .nm { flex: 1 1 auto; min-width: 0; white-space: normal;
+  overflow-wrap: anywhere; }
+.mhead .meta { margin-left: auto; }
+.mroles { display: flex; flex-wrap: wrap; column-gap: 2.4ch;
+  color: var(--sub); }
+.mrole::before { content: attr(data-p) ": "; color: var(--faint); }
 .othermodels { padding: 2px 18px 14px; color: var(--sub);
   font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .seg i { flex: 1 1 0; height: 8px; background: var(--track); display: block; }
 .seg i.on { background: var(--seg); }
 
-/* ---- services and jobs -------------------------------------------------- */
+/* ---- services ----------------------------------------------------------- */
 
 /* the container owns the tracks and rows subgrid onto them, so columns size
    to their widest content on any screen; only the flexible column truncates */
-#svcs, #jobs { display: grid; column-gap: 1.2ch; }
-#svcs { grid-template-columns: max-content minmax(0,1fr) repeat(3, max-content); }
-/* jobs carry the extra run-key column, so their gutters are tighter and the
-   column headers less tracked-out to keep full names visible three panels
-   across */
-#jobs { grid-template-columns: max-content minmax(0,1fr) repeat(4, max-content);
-        column-gap: 1ch; }
-#jobs .colhead { letter-spacing: 0.04em; }
-/* the frequency split's group labels span the full row */
-.jobgroup { grid-column: 1 / -1; padding: 8px 18px 2px;
-  color: var(--faint); font-size: 11px; letter-spacing: 0.1em;
-  text-transform: uppercase; }
-.svcrow, .jobrow {
+#svcs { display: grid; column-gap: 1.2ch;
+  grid-template-columns: max-content minmax(0,1fr) repeat(3, max-content); }
+.svcrow {
   display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
   gap: 1.2ch; align-items: baseline; padding: 6px 18px;
 }
-.jobrow { gap: 1ch; align-items: center; }
-.svcrow:hover, .jobrow:hover { background: var(--band); }
+.svcrow:hover { background: var(--band); }
 /* a bad service's detail runs long, so it leaves the uptime column as a short
    marker and takes a full-width line of its own that wraps, instead of
    stretching the max-content track past the screen */
@@ -299,10 +289,6 @@ body {
 .colhead > * { font-size: 11px; font-family: inherit; }
 .colhead:hover { background: none; }
 .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* schedule detail the interval and time don't carry (a weekly job's
-   weekday), trailing the job name in smaller faint sans */
-.jnote { font-family: var(--sans); font-weight: 400; font-size: 12px;
-  color: var(--faint); margin-left: 0.8ch; }
 .dim { color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the faint tier: present but out of the way (ports, tailnet, uptime,
    schedules, model sizes) */
@@ -310,37 +296,6 @@ body {
   text-overflow: ellipsis; }
 .r { text-align: right; white-space: nowrap; }
 .pad { padding-bottom: 10px; }
-
-/* ---- job run keys: one flat play key per job row ------------------------ */
-
-.rowrun {
-  font: inherit; cursor: pointer;
-  display: grid; place-items: center; padding: 4px 9px;
-  border-radius: 6px;
-  background: none; border: 2px solid var(--rule);
-  color: var(--sub);
-}
-.rowrun .svg-icon { width: 12px; height: 12px; }
-.rowrun:hover { background: var(--fill2); color: var(--ink); }
-.rowrun:disabled { opacity: .5; cursor: default; border-color: transparent; }
-/* two-tap feedback: same states as the .sq/.key rules in the shared
-   tap-feedback.css — gray pulsing ring while armed (normal look
-   otherwise), steady blue fill while the request is in flight */
-.rowrun { transition: transform .08s, color .15s,
-  background-color .15s, border-color .15s; }
-.rowrun:enabled:active { transform: scale(.92); }
-.rowrun.armed { animation: arm-burst 1.6s ease-out infinite; }
-.rowrun.inflight { color: var(--faint);
-  background: color-mix(in srgb, var(--tool) 10%, var(--bg));
-  animation: hold-pulse-row 1.1s ease-in-out infinite alternate; }
-.rowrun.inflight:disabled { opacity: 1; cursor: default; }
-/* the key's own 2px border plus a 1px inner line breathe together, so the
-   blue reads as a heavier version of the .sq/.key in-flight pulse */
-@keyframes hold-pulse-row {
-  from { border-color: var(--tool); box-shadow: inset 0 0 0 1px var(--tool); }
-  to { border-color: color-mix(in srgb, var(--tool) 30%, var(--bg));
-       box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tool) 30%, var(--bg)); }
-}
 
 /* ---- links reference list ----------------------------------------------- */
 
@@ -450,12 +405,10 @@ html[data-text="m"] .stat .v { font-size: 15px; }
 html[data-text="m"] .stat .d { font-size: 14px; }
 html[data-text="m"] .colhead > * { font-size: 12.5px; }
 html[data-text="m"] .recp { font-size: 14px; }
-html[data-text="m"] .jnote { font-size: 14px; }
 html[data-text="m"] .share { height: 20px; }
 html[data-text="m"] .share > div { font-size: 12.5px; }
 html[data-text="m"] .seg i { height: 9px; }
 html[data-text="m"] .sessrow i { width: 10px; height: 10px; }
-html[data-text="m"] .rowrun .svg-icon { width: 14px; height: 14px; }
 
 html[data-text="l"] body { font-size: 18.5px; }
 html[data-text="l"] :where(.st, .nm, .tn, .tc, .fam-n, .dim, .faint,
@@ -472,44 +425,13 @@ html[data-text="l"] .stat .v { font-size: 17px; }
 html[data-text="l"] .stat .d { font-size: 16px; }
 html[data-text="l"] .colhead > * { font-size: 14px; }
 html[data-text="l"] .recp { font-size: 16px; }
-html[data-text="l"] .jnote { font-size: 16px; }
 html[data-text="l"] .share { height: 22px; }
 html[data-text="l"] .share > div { font-size: 14px; }
 html[data-text="l"] .seg i { height: 10px; }
 html[data-text="l"] .sessrow i { width: 11px; height: 11px; }
-html[data-text="l"] .rowrun .svg-icon { width: 16px; height: 16px; }
 
 @media (max-width: 760px) {
-  /* job run keys: room to spare in one column, so a full finger target */
-  .rowrun { padding: 8px 16px; }
-  /* jobs: the first-run column gives way so names stay whole */
-  #jobs { grid-template-columns: max-content minmax(0,1fr) repeat(3, max-content); }
-  .jobrow > :nth-child(4) { display: none; }
   .catalog { grid-template-columns: minmax(0,1fr); }
-}
-/* models on a narrow panel (a phone, or a raised text size shrinking the
-   effective width — media and container queries both see the unzoomed
-   viewport): one wrapped flow per row, source/name/size on the first line,
-   labeled roles on the next; five tracks would scroll sideways. The .narrow
-   class is set by a ResizeObserver in the page script */
-.panel[data-key="models"].narrow #models { display: block; }
-.panel[data-key="models"].narrow #models .colhead { display: none; }
-.panel[data-key="models"].narrow .modelrow { display: flex; flex-wrap: wrap;
-  align-items: baseline; column-gap: 1.6ch; row-gap: 2px; }
-.panel[data-key="models"].narrow .modelrow .nm { flex: 1 1 auto; min-width: 0;
-  white-space: normal; overflow-wrap: anywhere; }
-.panel[data-key="models"].narrow .modelrow .mrole { white-space: normal;
-  overflow-wrap: anywhere; }
-/* a row where either profile holds several roles gives each profile its own
-   line: roles stack one per line, so side by side the longer profile's tail
-   would sit under both labels and belong to neither */
-.panel[data-key="models"].narrow .modelrow.multi .mrole { flex: 1 0 100%; }
-.panel[data-key="models"].narrow .modelrow .mrole::before {
-  content: attr(data-p) ": "; color: var(--faint); }
-@media (max-width: 480px) {
-  /* jobs: the every column goes too, so names stay whole on a phone */
-  #jobs { grid-template-columns: max-content minmax(0,1fr) repeat(2, max-content); }
-  .jobrow > :nth-child(3) { display: none; }
 }
 </style>
 </head>
@@ -536,14 +458,6 @@ html[data-text="l"] .rowrun .svg-icon { width: 16px; height: 16px; }
     <section class="panel"><div class="pad" id="svcs"></div></section>
   </section>
 
-  <section class="area" id="area-jobs">
-    <div class="area-top">
-      <span class="a-ic jobs"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
-      <h2 class="area-h">jobs</h2>
-    </div>
-    <section class="panel"><div class="pad" id="jobs"></div></section>
-  </section>
-
   <section class="area" id="area-mcp">
     <div class="area-top">
       <span class="a-ic mcp"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22v-5"/><path d="M15 8V2"/><path d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z"/><path d="M9 8V2"/></svg></span>
@@ -557,7 +471,7 @@ html[data-text="l"] .rowrun .svg-icon { width: 16px; height: 16px; }
       <span class="a-ic models"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></span>
       <h2 class="area-h">models</h2>
     </div>
-    <section class="panel" data-key="models">
+    <section class="panel">
       <div class="pad" id="models"></div>
       <div class="othermodels" id="othermodels" hidden></div>
     </section>
@@ -616,17 +530,17 @@ html[data-text="l"] .rowrun .svg-icon { width: 16px; height: 16px; }
 </main>
 
 <script src="iris.js"></script>
+<script src="armed-button.js"></script>
 <script src="bar.js"></script>
 <script src="dev-bar.js"></script>
-<script src="armed-button.js"></script>
 <script>
 /* the top bar is built and wired by bar.js (shared with the actions page):
    page tiles, the chevron row, theme key, text-size keys; tick() reports the
    status text next to the wordmark via barStatus() */
 
 /* ---- glance tiles + view --------------------------------------------------
-   One tile per area plus "all": a count — issues for services, jobs and
-   mcp; the day's calls and sessions for tools and sessions — and one
+   One tile per area plus "all": a count — issues for services and mcp;
+   the day's calls and sessions for tools and sessions — and one
    shorthand status line, amber when something is wrong. A tile picks the
    view: "all" stacks every area, an area tile shows it alone; the choice
    sticks in localStorage, per device and per origin, like the bar's
@@ -636,9 +550,8 @@ html[data-text="l"] .rowrun .svg-icon { width: 16px; height: 16px; }
 localStorage.removeItem("iris-closed");   /* the old folding UI's store */
 localStorage.removeItem("iris-status-view");   /* the old page name's store */
 const VIEW_KEY = "iris-dashboard-view";
-const AREA_IDS = ["services", "jobs", "mcp", "models", "tools", "sessions",
-                  "links"];
-const TILE_ICONS = { all: "layout-grid", services: "activity", jobs: "clock",
+const AREA_IDS = ["services", "mcp", "models", "tools", "sessions", "links"];
+const TILE_ICONS = { all: "layout-grid", services: "activity",
   mcp: "plug", models: "cpu", tools: "wrench", sessions: "message-square",
   links: "link" };
 let view = localStorage.getItem(VIEW_KEY);
@@ -650,7 +563,6 @@ let SNAP = null;
 function tileFacts(d) {
   const badSvc = d.services
     .filter((s) => s.state !== "ok" && s.state !== "idle").length;
-  const badJob = d.cron.filter((j) => j.state === "bad").length;
   const badMcp = d.mcpServers.filter((s) => s.state !== "ok").length;
   const names = new Set();
   for (const prof of [d.models.iris, d.models.ops])
@@ -658,8 +570,6 @@ function tileFacts(d) {
       for (const m of list || []) names.add(m.name);
   return {
     services: { count: badSvc, short: [[badSvc ? "bad" : "", "down"]] },
-    jobs: { count: badJob, short: d.cron.some((j) => j.running)
-      ? [["wrk", "running"]] : [[badJob ? "bad" : "", "failed"]] },
     mcp: { count: badMcp, short: [[badMcp ? "bad" : "", "down"]] },
     models: { count: names.size, short: [["", "in use"]] },
     tools: { count: sum(d.tools24h.map((t) => t[2])),
@@ -674,7 +584,7 @@ function tileFacts(d) {
 function renderTiles() {
   if (!SNAP) return;
   const f = tileFacts(SNAP);
-  const issues = f.services.count + f.jobs.count + f.mcp.count;
+  const issues = f.services.count + f.mcp.count;
   const tile = (id, count, short) =>
     `<button class="atile ${id}${view === id ? " sel" : ""}" data-view="${id}">`
     + `<span class="trow">${icon(TILE_ICONS[id])}<span class="nm2">${id}</span></span>`
@@ -721,56 +631,6 @@ applyView();
 new IntersectionObserver(([entry]) =>
   $("#strip").classList.toggle("show", !entry.isIntersecting && !!SNAP),
   { rootMargin: "-48px 0px 0px 0px" }).observe($("#tiles"));
-
-/* the models table reflows into a wrapped layout when its five tracks don't
-   fit the panel — a narrow screen, or a bigger text size inflating the
-   tracks — or when the name column gets too thin to identify a model. The
-   check measures the table itself, so it works at any width and size; the
-   narrow class has to come off for the measurement, because a wrapped
-   layout never overflows and the state could never flip back */
-const modelsPanel = $('.panel[data-key="models"]');
-function syncModelsLayout() {
-  modelsPanel.classList.remove("narrow");
-  const g = $("#models");
-  const nameW = g.querySelector(".modelrow:not(.colhead) .nm")
-    ?.getBoundingClientRect().width || 0;
-  modelsPanel.classList.toggle("narrow",
-    g.scrollWidth > g.clientWidth + 1 || nameW < 90);
-}
-new ResizeObserver(syncModelsLayout).observe(modelsPanel);
-document.addEventListener("iris-text-size", syncModelsLayout);
-
-/* ---- action buttons -----------------------------------------------------
-   Job buttons hand the job to `hermes cron run`, wired through armedButton
-   (armed-button.js, shared with the actions page): arm, 5 s confirm window,
-   blue in-flight pulse until the reply; alert on failure. The wiring runs
-   again after every render, and the registry carries armed and in-flight
-   state across the rebuilds. */
-
-/* jobs whose run key stays disabled: name -> start stamp. The claim row
-   lands in hermes' ledger moments after the spawn, so a 30 s window covers
-   the gap until a snapshot reports the job running. */
-const startedJobs = new Map();
-
-async function act(job) {
-  /* claim the window at the firing tap — a refresh landing mid-request
-     rebuilds the row and must not re-enable the key */
-  startedJobs.set(job, Date.now());
-  try {
-    const r = await fetch("/api/job/run?name=" + encodeURIComponent(job),
-                          { method: "POST" });
-    const text = await r.text();
-    if (r.ok && !/^(FAILED|REJECTED)/.test(text)) {
-      refresh();
-      setTimeout(refresh, 3000);   /* one early pass that sees the claim */
-      return;
-    }
-    alert(text || "request failed");
-  } catch {
-    alert("request failed");
-  }
-  startedJobs.delete(job);
-}
 
 /* sessions: hovering a share segment or a name row lights up everything in
    the same slot — the row and its segments in all three bars. The rows in
@@ -864,8 +724,6 @@ const SEGS = 7;
 const seg = (pct) => `<div class="seg">` + Array.from({ length: SEGS }, (_, i) =>
   `<i class="${i < Math.round(pct / 100 * SEGS) ? "on" : ""}"></i>`).join("") + `</div>`;
 
-const byName = (a, b) => a.name.localeCompare(b.name);
-
 function render(d) {
   SNAP = d;
   $("#pane-dash").classList.remove("loading");
@@ -885,7 +743,7 @@ function render(d) {
     + seg(pct) + `</div>`).join("");
 
   /* ---- models: each provider+model pair once, with the roles every
-     profile gives it; rows sorted by model name and each cell's roles
+     profile gives it; blocks sorted by model name and each profile's roles
      sorted among themselves.
      Without a provider pin the source is inferred from the size,
      which is measured from the local oMLX model folders: a sized model is
@@ -909,26 +767,21 @@ function render(d) {
       e.roles[pi].push(m.label || role);
       byModel.set(key, e);
     })));
-  $("#models").innerHTML = `<div class="modelrow colhead"><span>Source</span>`
-    + `<span>Model</span><span class="r">Size</span>`
-    + `<span>Iris</span><span>Ops</span></div>`
-    + [...byModel.values()].sort((a, b) => byName(a.name, b.name))
-      .map((e) => `<div class="modelrow${
-        e.roles.some((rs) => rs.length > 1) ? " multi" : ""}">`
-      + `<span class="dim">${e.provider
+  $("#models").innerHTML = [...byModel.values()]
+    .sort((a, b) => byName(a.name, b.name))
+    .map((e) => `<div class="modelrow">`
+      + `<div class="mhead"><span class="nm">${e.name}</span>`
+      + `<span class="faint meta">${e.provider
           ? SOURCES[e.provider] || e.provider
-          : e.size ? "oMLX" : "OpenRouter"}</span>`
-      + `<span class="nm" title="${e.name}">${e.name}</span>`
-      + `<span class="faint r">${e.size || "–"}</span>`
-      /* data-p labels the role cell on phones, where the row wraps into a
-         flow and the "Iris"/"Ops" column headers are hidden */
+          : e.size ? "oMLX" : "OpenRouter"}${e.size ? " · " + e.size : ""}</span></div>`
+      /* data-p writes the "iris:"/"ops:" prefix; a profile with no role
+         for the model shows nothing */
+      + `<div class="mroles">`
       + e.roles.map((rs, ri) => rs.length
         ? `<span class="mrole" data-p="${ri ? "ops" : "iris"}">${
-            rs.slice().sort(byName).join("<br>")}</span>`
-        : `<span class="mrole faint" data-p="${ri ? "ops" : "iris"}">–</span>`).join("")
-      + `</div>`).join("");
-  /* the "Local:" line runs outside the grid so it wraps instead of widening
-     the content-sized tracks */
+            rs.slice().sort(byName).join(", ")}</span>`
+        : "").join("")
+      + `</div></div>`).join("");
   const om = $("#othermodels");
   om.hidden = !d.models.otherLocal?.length;
   om.textContent = d.models.otherLocal?.length
@@ -936,15 +789,14 @@ function render(d) {
         .sort((a, b) => byName(a.name, b.name))
         .map((m) => `${m.name} (${m.size})`).join(", ")
     : "";
-  syncModelsLayout();
 
-  /* ---- services and jobs ------------------------------------------------ */
+  /* ---- services ---------------------------------------------------------- */
 
   /* the column headers render with the rows: they have to live inside the
      grid container to share its content-sized tracks */
   $("#svcs").innerHTML = `<div class="svcrow colhead"><span></span><span>Name</span>`
     + `<span>Port</span><span>Tailnet</span><span class="r">Uptime</span></div>`
-    + d.services.slice().sort(byName).map((s, i) => {
+    + d.services.slice().sort((a, b) => byName(a.name, b.name)).map((s, i) => {
     const cls = s.state === "ok" ? "ok" : s.state === "idle" ? "idl" : "bad";
     const word = s.state === "ok" ? "[OK]" : s.state === "idle" ? "[--]" : "[!!]";
     /* bad: marker in the uptime column, the full detail on the line below */
@@ -957,43 +809,9 @@ function render(d) {
       + (bad ? `<div class="err">${s.detail}</div>` : "") + `</div>`;
   }).join("");
 
-  /* the jobs split: jobs firing more than once a day sit in their own group
-     above the daily-and-slower ones; the labels only show when both groups
-     have rows. Banding continues across the split. */
-  const allJobs = d.cron.slice().sort(byName);
-  const jobGroups = [
-    ["Through the day", allJobs.filter((j) => j.perDay > 1)],
-    ["Once a day or less", allJobs.filter((j) => !(j.perDay > 1))],
-  ].filter(([, l]) => l.length);
-  const jobRow = (j, i) => {
-    const cls = j.state === "ok" ? "ok" : j.state === "bad" ? "bad" : "idl";
-    const word = j.state === "ok" ? "[OK]" : j.state === "bad" ? "[!!]" : "[??]";
-    /* the run key stays disabled while the job runs (snapshot flag), and
-       through the starting window after a press */
-    const busy = j.running
-      || Date.now() - (startedJobs.get(j.name) || 0) < 30000;
-    return `<div class="jobrow${banded(i)}"><span class="st ${cls}">${word}</span>`
-      + `<span class="nm">${j.name}${j.note ? `<span class="jnote">${j.note}</span>` : ""}</span>`
-      + `<span class="faint">${j.every || "–"}</span>`
-      + `<span class="faint">${j.first || "–"}</span>`
-      + `<span class="dim r">${j.last}</span>`
-      + `<button class="rowrun" data-job="${j.name}" aria-label="Run ${j.name}"`
-      + `${busy ? ' disabled title="running"' : ""}>`
-      + `${icon("play")}</button></div>`;
-  };
-  let jobIndex = 0;
-  $("#jobs").innerHTML = `<div class="jobrow colhead"><span></span><span>Name</span>`
-    + `<span>Every</span><span>First run</span><span class="r">Last ran</span>`
-    + `<span></span></div>`
-    + jobGroups.map(([label, list]) =>
-      (jobGroups.length > 1 ? `<div class="jobgroup">${label}</div>` : "")
-      + list.map((j) => jobRow(j, jobIndex++)).join("")).join("");
-  $$("#jobs .rowrun").forEach((b) =>
-    armedButton(b, "job/" + b.dataset.job, () => act(b.dataset.job)));
-
   $("#mcp").innerHTML = `<div class="mcprow colhead"><span></span><span>Name</span>`
     + `<span class="r">Port</span><span class="r">Last used</span></div>`
-    + d.mcpServers.slice().sort(byName).map((s, i) => {
+    + d.mcpServers.slice().sort((a, b) => byName(a.name, b.name)).map((s, i) => {
     const ok = s.state === "ok";
     return `<div class="mcprow${banded(i)}"><span class="st ${ok ? "ok" : "bad"}">`
       + `${ok ? "[OK]" : "[!!]"}</span>`
@@ -1013,19 +831,13 @@ function render(d) {
 
   /* ---- overall status: anything bad on the page reads as WARN ----------- */
 
-  warn = [...d.services, ...d.mcpServers, ...d.cron]
-    .some((x) => x.state === "bad");
+  warn = [...d.services, ...d.mcpServers].some((x) => x.state === "bad");
 
-  /* ---- links: the bar's apps, plus the full list at the bottom ----------- */
-
-  const url = Object.fromEntries(d.links.map((l) => [l.name, l.url]));
-  $("#app-webui").href = url.webui;
-  $("#app-actual").href = url.actual;
-  $("#app-actions").href = url.actions;
+  /* ---- links: the full list at the bottom -------------------------------- */
 
   $("#linklist").innerHTML = `<div class="linkrow colhead">`
     + `<span>Name</span><span>Address</span></div>`
-    + d.links.slice().sort(byName).map((l, i) =>
+    + d.links.slice().sort((a, b) => byName(a.name, b.name)).map((l, i) =>
     `<div class="linkrow${banded(i)}"><span class="nm">${l.name}</span>`
     + `<a href="${l.url}" target="_blank" rel="noopener">${l.url}</a></div>`).join("");
 

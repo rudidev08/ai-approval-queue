@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """cash_flow — money in, money out, vs the monthly average (read-only).
 
-Three plain-text views over the api-cache SQLite copy:
+Two plain-text views over the api-cache SQLite copy, pulled fresh from the
+server when its last download is older than 10 minutes (api_cache.pull_api_cache_if_stale):
 
   build_report()                current-month status: so far, and once one
                                 complete month exists, projection and streak
-  build_report(month="2026-09") that month vs its average
-  build_report(group="Variable")   adds that group's per-category rows
+  build_report(month="2026-08") that finished month vs its average
   history_report(6)             one line per complete month, newest first
+  check_report()                the current month's Check items alone, as
+                                a list — the daily email's Check section
+
+build_report also takes detailed — the report size. False (regular, the
+default) prints income sources one line each, no history rows anywhere,
+and debts at balance and rate only; True prints everything. categories
+adds each group's per-category rows under its group row.
 
 The average is the plain mean per category over up to WINDOW complete months,
 never earlier than FIRST_MONTH (the first full import month; the window grows
@@ -21,7 +28,7 @@ The standing payment is the latest one, judged against the two before it
 (INCOME_TOLERANCE apart counts as different): a lone spike or dip is an
 outlier and the previous payment stands in; two payments agreeing at a new
 level are a confirmed change and count; the source's line says which. A
-source's rhythm comes from vault/docs/finances/income-sources.md when set
+source's rhythm comes from vault/docs/finances/cash-flow.md when set
 there, otherwise from its own gaps once it has DETECT_MIN payments, and a
 source with neither gets no figure. That file also carries a display name
 and, for a payee covering more than one income, how many — such a payee uses
@@ -30,62 +37,98 @@ consecutive comparison meaningless.
 An entry with an amount is its own source: it claims every deposit of
 exactly that value, whatever the payee, and its name is the display name;
 old values stay listed so past deposits keep their source.
+An entry with an estimate uses that value as a stand-in payment while it
+has no deposits: the value times its file-set frequency, printed as a
+placeholder; the first real deposit replaces it.
 A source silent for STOPPED_INTERVALS of its own gaps leaves the total —
 a payment's value is good for one cycle plus slack for a late arrival. The
 status view prints the estimate and one line per source; a past month shows
 the income that actually arrived instead, so no estimate appears there.
 
-The projection counts that income estimate, NO_FORECAST_GROUPS at what was
-actually spent (deliberate extra payments, made only when money is there, so
-no future figure exists for them), and FIXED_GROUPS at their full monthly
-figure (lumpy flows take no pace judgment); every other group runs at pace:
+The projection counts that income estimate, ONE_OFF_GROUPS at what was
+actually spent (one-time flows, so no future figure exists for them), and
+FIXED_GROUPS at their full monthly figure (lumpy flows take no pace
+judgment); every other group runs at pace:
 actual so far + average x remaining share of the month, even spread assumed.
 It rests on the average, so until one complete month exists the status view
 shows what has happened so far and nothing about month end. ledger_month()
 returns one complete month's cents for the monthly-balance file that
-finance_scan.py writes.
-The status view groups under two labels: Estimated — the projection and the
-income estimate — and Actual — so far, tracked categories, how long the
-money lasts, debt.
-The Actual side says how long the money lasts: CHECKING_ACCOUNT's
-balance (every transaction in the account, transfers and starting balance
-included) divided by the average monthly spending, income not counted —
-until one complete month exists the balance shows alone.
-The status view ends with the Debt section from debts.py — balances,
-change and payoff math out of vault/docs/finances/debts.md — when that
-file exists.
-A green month is one whose income covered spending. Excluded everywhere: transfers,
+finance_jobs.py writes.
+The status view runs in ### sections: Estimated — the projection, the
+income estimate, the expense estimate (the average monthly spending, one
+line per group; this month so far until one complete month exists) and the
+upcoming one-time expenses; Actual — the income total with its category
+rows, the expense total with its group rows (each with its category rows
+when categories is set), tracked categories. In a
+detailed report every Actual row carries a history row
+underneath with the two previous
+months and the percent change against each ('  - Jul $x (+24%) · Jun $y
+(-8%)'; a month before FIRST_MONTH prints '-', the percent is left out
+when the month is zero); Forecast —
+how long the money lasts: CHECKING_ACCOUNT's balance (every transaction in
+the account, transfers and starting balance included) against the burn
+(expense estimate minus income estimate) — never runs out while the
+estimate covers itself; Assets and Debt —
+asset balances and change out of vault/docs/finances/assets.md, then
+per-tier debt balances, change, payoff and interest math out of
+vault/docs/finances/debts.md, when those files exist; Check — uncategorized
+money and finance-file problems, printed only when there is something to
+say.
+A past month is the same report with the month's final numbers: the Actual
+rows carry the average column instead of the pace, a leftover total, the
+OUTLIERS_N categories furthest from their average and the streak; Estimated
+and Forecast are left out, and Assets and Debt reads the files as of that
+month's end.
+Upcoming one-time expenses are hand-listed in CASH_FLOW_FILE's Upcoming
+section (amount, optional best-guess month, display only); each prints in
+the Estimated block. The entry is
+deleted by hand once paid — the payment itself goes to a ONE_OFF_GROUPS
+category: that month's totals show it, no average ever does.
+A green month is one whose income covered spending. ONE_OFF_GROUPS hold
+real outside-world money that is not normal life (an asset bought to sell
+on, a planned one-time payment): it counts in every month's income and
+spending — green/red and history tell the truth — but stays out of every
+average, so the pace rows, the average columns, the outliers and the
+runs-out divisor never see it. Excluded everywhere: transfers,
 off-budget accounts, starting-balance rows, EXCLUDED_GROUPS. Uncategorized
-money always gets its own rows, split by sign; a deleted category's
+money is counted in the totals and named in the Check section, split by
+sign; a deleted category's
 transactions count as uncategorized. Whole dollars, minus before the dollar
 sign; rows round independently of totals, so a $1 drift between them is
 possible and left alone.
 
-CLI: cash_flow.py [YYYY-MM] [--group NAME] | --history N
+CLI: cash_flow.py [YYYY-MM] [--detailed] [--categories] [--combine-personal] | --history N
 """
 
 import calendar
-import glob
 import os
 import re
-import sqlite3
 import sys
 from datetime import date, timedelta
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import debts  # noqa: E402
+import api_cache  # noqa: E402
 
 FIRST_MONTH = "2026-08"    # first full import month; earlier months never count
 WINDOW = 12                # complete months in the average, at most
 EXCLUDED_GROUPS = ["Ignored"]   # group names left out of every number
-FIXED_GROUPS = []          # groups projected at average, no pace judgment
-NO_FORECAST_GROUPS = ["One-off"]   # spending counted as it happens, never projected
-TRACKED_CATEGORIES = []    # category names always shown with their own row
-CHECKING_ACCOUNT = "Acme Checking"     # account the runs-out section reads
+FIXED_GROUPS = ["Fixed"]   # groups projected at average, no pace judgment
+ONE_OFF_GROUPS = ["One-off"]   # counted in month totals, in no average; projected as spent
+# category name -> the row its amount joins when a report is built with
+# combine_personal: those categories print as one row under that label
+# instead of their own, so no per-person figure is named. The group
+# total is unchanged, so the rows under it still add up to it.
+PERSONAL_CATEGORIES = {"Morgan One-off": "Personal",
+                       "Riley One-off": "Personal",
+                       "Alex": "Personal",
+                       "Morgan": "Personal",
+                       "Riley": "Personal",
+                       "Morgan Recurring": "Personal Subscription",
+                       "Riley Recurring": "Personal Subscription"}
+CHECKING_ACCOUNT = "StarOne Checking"   # account the runs-out section reads
 OUTLIERS_N = 3
 HISTORY_CAP = 24
-
-API_CACHE = os.path.expanduser("~/Iris/services/actual/api-cache")
 
 # --- income sources ---
 # One payee inside the INCOME_SOURCE_CATEGORY category is one source — except
@@ -96,8 +139,7 @@ API_CACHE = os.path.expanduser("~/Iris/services/actual/api-cache")
 # counting months mis-states every rhythm that does not divide into one (26
 # paychecks a year is 2.167 a month, never 2 or 3). A payee carrying several
 # incomes uses the mean of its last whole round instead.
-SOURCES_FILE = os.path.expanduser(
-    "~/Iris/vault/docs/finances/income-sources.md")
+CASH_FLOW_FILE = os.path.expanduser("~/Iris/vault/docs/finances/cash-flow.md")
 INCOME_SOURCE_CATEGORY = "Recurring"   # the other income category is one-off
 INCOME_TOLERANCE = 0.10  # payments this fraction apart count as different
 DETECT_MIN = 3           # payments needed before the dates may name a frequency
@@ -147,9 +189,24 @@ def _days_in(idx):
     return calendar.monthrange(idx // 12, idx % 12 + 1)[1]
 
 
+# the YYYYMMDD integer Actual stores a date as, both ways, and the bank's
+# cents; shared with oddities.py, server.py and the actions service
 def _to_date(yyyymmdd):
     s = str(yyyymmdd)
     return date(int(s[:4]), int(s[4:6]), int(s[6:]))
+
+
+def _day_int(d):
+    return int(d.strftime("%Y%m%d"))
+
+
+def _iso(yyyymmdd):
+    s = str(yyyymmdd)
+    return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+
+
+def _dollars(cents):
+    return f"{(cents or 0) / 100:.2f}"
 
 
 # ---------------------------------------------------------------- dollars
@@ -177,15 +234,6 @@ def _plural(n, word):
 
 
 # ---------------------------------------------------------------- reading the copy
-
-def _db():
-    paths = glob.glob(os.path.join(API_CACHE, "*", "db.sqlite"))
-    if len(paths) != 1:
-        raise RuntimeError(f"expected one budget copy under {API_CACHE}, found {len(paths)}")
-    conn = sqlite3.connect(f"file:{paths[0]}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 
 def _structure(conn):
     """(cats, groups): cats = {category id: {name, grp}}, groups = ordered
@@ -293,28 +341,42 @@ def _month_data(rows, idx, cats, excluded_ids=frozenset()):
     return d
 
 
-def _average(months):
-    """Mean of the given month dicts, same shape, float cents; {} months is
-    the caller's first-month case and never reaches here."""
+def _average(months, skip=frozenset()):
+    """Mean of the given month dicts, same shape, float cents; skip
+    (the ONE_OFF_GROUPS category ids) stays out — averages describe normal
+    life. {} months is the caller's first-month case and never reaches
+    here."""
     n = len(months)
-    ids = {cid for m in months for cid in m["cats"]}
+    ids = {cid for m in months for cid in m["cats"]} - skip
     return {"cats": {cid: sum(m["cats"].get(cid, 0) for m in months) / n
                      for cid in ids},
             "uncat_inc": sum(m["uncat_inc"] for m in months) / n,
             "uncat_spend": sum(m["uncat_spend"] for m in months) / n}
 
 
-def _totals(d, cats, income_groups):
+def _totals(d, cats, income_groups, skip_groups=()):
     """(income, spending) cents, spending positive. Categorized money counts
-    net — a refund reduces its category's spending — uncategorized by sign."""
+    net — a refund reduces its category's spending — uncategorized by sign.
+    skip_groups leaves those groups out (the average flavor)."""
     income = d["uncat_inc"]
     spending = d["uncat_spend"]
     for cid, net in d["cats"].items():
+        if cats[cid]["grp"] in skip_groups:
+            continue
         if cats[cid]["grp"] in income_groups:
             income += net
         else:
             spending += -net
     return income, spending
+
+
+def _avg_pair(ctx, win):
+    """(income, spending) average cents over the window, ONE_OFF_GROUPS left
+    out — the average describes normal life, which they are not."""
+    pairs = [_totals(ctx["months"][i], ctx["cats"], ctx["income_groups"],
+                     ONE_OFF_GROUPS) for i in win]
+    n = len(win)
+    return sum(p[0] for p in pairs) / n, sum(p[1] for p in pairs) / n
 
 
 def _group_net(d, cats, grp):
@@ -334,28 +396,30 @@ def _streak(leftovers):
 # ---------------------------------------------------------------- income sources
 
 SOURCES_HEADING = "## Sources"
+UPCOMING_HEADING = "## Upcoming"
 
 
-def _read_sources(path=None):
-    """({payee: {key: value}}, problem) from SOURCES_FILE. Only the
-    SOURCES_HEADING section is read, so the notes above it are free prose and
-    may use bullets of their own: inside it a top-level '- ' bullet names a
-    payee and its indented 'key: value' bullets are that payee's fields
-    (frequency, label, incomes). A missing file is no problem at all — every
-    source then rests on its own dates — but a file with no such heading is,
-    since entries written outside it would be read by nobody."""
-    path = path or SOURCES_FILE   # read at call time; tests repoint the global
+def _read_file():
+    """CASH_FLOW_FILE text, or None when it cannot be read — a missing file
+    is a valid state, unlike a present one with no headings."""
     try:
-        with open(path, encoding="utf-8") as f:
-            text = f.read()
+        with open(CASH_FLOW_FILE, encoding="utf-8") as f:
+            return f.read()
     except (OSError, UnicodeDecodeError):
         # a stray byte would otherwise take the whole cash-flow report down,
         # and this file is edited by hand and by the agent
-        return {}, ""
-    head = re.search(rf"^{re.escape(SOURCES_HEADING)}\s*$", text, re.M)
+        return None
+
+
+def _parse_section(text, heading):
+    """{name: {key: value}} from one section of CASH_FLOW_FILE, or None when
+    the heading is absent. Only that section is read, so the notes elsewhere
+    in the file are free prose and may use bullets of their own: inside the
+    section a top-level '- ' bullet names an entry and its indented
+    'key: value' bullets are that entry's fields."""
+    head = re.search(rf"^{re.escape(heading)}\s*$", text, re.M)
     if not head:
-        return {}, (f"{os.path.basename(path)} has no '{SOURCES_HEADING}' "
-                    "heading, so no source entries were read")
+        return None
     out, cur = {}, None
     for line in text[head.end():].splitlines():
         if line.startswith("#"):
@@ -370,7 +434,30 @@ def _read_sources(path=None):
         elif cur is not None and ":" in body:
             key, value = body.split(":", 1)
             out[cur][key.strip().casefold()] = value.strip()
-    return out, ""
+    return out
+
+
+def _read_sources():
+    """({payee: {key: value}}, problem) from the SOURCES_HEADING section.
+    A missing file is no problem at all — every source then rests on its own
+    dates — but a file with no such heading is, since entries written
+    outside it would be read by nobody."""
+    text = _read_file()
+    if text is None:
+        return {}, ""
+    entries = _parse_section(text, SOURCES_HEADING)
+    if entries is None:
+        return {}, (f"{os.path.basename(CASH_FLOW_FILE)} has no "
+                    f"'{SOURCES_HEADING}' heading, so no source entries "
+                    "were read")
+    return entries, ""
+
+
+def _read_upcoming():
+    """{name: {key: value}} from the UPCOMING_HEADING section — the
+    hand-listed one-time expenses ahead. A missing file or heading is
+    simply no items."""
+    return _parse_section(_read_file() or "", UPCOMING_HEADING) or {}
 
 
 def _per_year(text):
@@ -441,7 +528,7 @@ def _round_mean(amounts, incomes):
 
 
 def _entry_amounts(entries):
-    """({entry: [cents]}, {entry: [note]}) for SOURCES_FILE entries carrying
+    """({entry: [cents]}, {entry: [note]}) for CASH_FLOW_FILE entries carrying
     an amount field. Values are separated by commas or spaces, so a value
     holds no thousands separator — '$2,000' reads as '$2' and '000', and the
     note on '000' is how that mistake surfaces. A value another entry already
@@ -453,7 +540,7 @@ def _entry_amounts(entries):
         amounts[name], notes[name] = [], []
         for tok in re.split(r"[\s,]+", e["amount"].strip()):
             if not re.fullmatch(AMOUNT_RE, tok):
-                notes[name].append(f"income-sources.md gives amount {tok!r}, "
+                notes[name].append(f"cash-flow.md gives amount {tok!r}, "
                                    "which is not a dollar amount")
                 continue
             cents = round(float(tok.lstrip("$")) * 100)
@@ -488,11 +575,40 @@ def _claim_amounts(payments, amounts):
     return out
 
 
+def _placeholder_row(name, e, notes):
+    """Row for an entry with an estimate field and no payments yet: the
+    estimate value stands in for a payment until the first deposit arrives.
+    The frequency must come from the file — there are no dates to read one
+    from — so without a valid one the row prints unestimable."""
+    notes = list(notes)
+    value = e["estimate"].strip()
+    freq = e.get("frequency", "")
+    per_year = _per_year(freq) if freq else None
+    if freq and per_year is None:
+        notes.append(f"cash-flow.md gives frequency {freq!r}, "
+                     "which is not a frequency I know")
+    monthly = None
+    if not re.fullmatch(AMOUNT_RE, value):
+        notes.append(f"cash-flow.md gives estimate {value!r}, "
+                     "which is not a dollar amount")
+    elif not freq:
+        notes.append("estimate set but no frequency — set one in "
+                     "cash-flow.md")
+    elif per_year:
+        monthly = round(float(value.lstrip("$")) * 100) * per_year / 12
+    return {"name": name, "label": e.get("label") or name,
+            "freq": freq if per_year else "", "per_year": per_year,
+            "monthly": monthly, "stopped": False, "placeholder": True,
+            "notes": notes}
+
+
 def _source_rows(ctx):
-    """([row], [missing]) — one row per income source, biggest monthly
-    first; missing = (name, by_amount, notes) for the SOURCES_FILE entries
-    that matched nothing in the budget. A row carries name, label, freq,
-    per_year, incomes, monthly, used, mean, latest, stopped and note;
+    """([row], [missing]) — one row per income source, alphabetical by
+    label; missing = (name, by_amount, notes) for the CASH_FLOW_FILE entries
+    that matched nothing in the budget and carry no estimate — an entry with
+    one becomes a placeholder row instead. A row carries name, label, freq,
+    per_year, incomes, monthly, used, mean, latest, stopped and note
+    (a placeholder row only label, freq, per_year, monthly, stopped, notes);
     per_year None means no frequency is known, so the source gets no monthly
     figure and stays out of the total."""
     entries = ctx["source_file"]
@@ -510,7 +626,7 @@ def _source_rows(ctx):
             if e["incomes"].isdigit() and int(e["incomes"]) >= 1:
                 incomes = int(e["incomes"])
             else:
-                notes.append(f"income-sources.md gives incomes "
+                notes.append(f"cash-flow.md gives incomes "
                              f"{e['incomes']!r}, which is not a count")
         # several incomes under one payee interleave, so the gaps between
         # arrivals describe no single rhythm — two twice-yearly grants a month
@@ -520,14 +636,14 @@ def _source_rows(ctx):
         want = e.get("frequency", "")
         set_year = _per_year(want) if want else None
         if want and set_year is None:
-            notes.append(f"income-sources.md gives frequency {want!r}, "
+            notes.append(f"cash-flow.md gives frequency {want!r}, "
                          "which is not a frequency I know")
         if set_year:
             freq, per_year = want, set_year
             # names may differ while the rate agrees ('quarterly' against
             # '4 per year'), so the check compares payments a year, not words
             if detected and PER_YEAR[detected] != set_year:
-                notes.append(f"income-sources.md says {want}, "
+                notes.append(f"cash-flow.md says {want}, "
                              f"the dates say {detected}")
         elif detected:
             freq, per_year = detected, PER_YEAR[detected]
@@ -548,14 +664,18 @@ def _source_rows(ctx):
                      "freq": freq, "per_year": per_year, "incomes": incomes,
                      "monthly": monthly, "used": used, "mean": mean,
                      "reason": reason, "latest": latest, "silent": silent,
-                     "stopped": stopped, "notes": notes, "n": len(pays)})
-    # counted sources first and richest first; stopped and unestimable ones
-    # gather at the bottom, where they read as exceptions rather than rows
-    # somebody has to check against the total
-    rows.sort(key=lambda r: (r["monthly"] is None or r["stopped"],
-                             -(r["monthly"] or 0), r["label"]))
-    missing = [(name, name in entry_amounts, amount_notes.get(name, []))
-               for name in entries if name not in payments]
+                     "stopped": stopped, "placeholder": False,
+                     "notes": notes, "n": len(pays)})
+    missing = []
+    for name, e in entries.items():
+        if name in payments:
+            continue
+        if "estimate" in e:
+            rows.append(_placeholder_row(name, e, amount_notes.get(name, [])))
+        else:
+            missing.append((name, name in entry_amounts,
+                            amount_notes.get(name, [])))
+    rows.sort(key=lambda r: r["label"].lower())
     return rows, missing
 
 
@@ -565,11 +685,14 @@ def _ago(days):
     return _plural(round(days / 30.44), "month") + " ago"
 
 
-def _income_section(ctx):
+def _income_section(ctx, detailed=True):
     """(estimate cents, lines) — the monthly income estimate and one entry
     per source. Counted are sources with a known frequency that have not gone
     silent; every other source still prints, with the reason instead of a
-    number."""
+    number. detailed=False is the regular report size: one line per source —
+    label and monthly amount, '(est)' on a placeholder — with the sub-lines
+    left out. The check notes print in both sizes; hiding a mistake would
+    not fix it."""
     rows, missing = _source_rows(ctx)
     total = sum(r["monthly"] for r in rows
                 if r["monthly"] is not None and not r["stopped"])
@@ -578,15 +701,32 @@ def _income_section(ctx):
         lines.append(f"- no payments yet in the {INCOME_SOURCE_CATEGORY} "
                      "income category")
     for r in rows:
-        if r["stopped"]:
-            lines.append(f"- {r['label']} ({r['freq']}): stopped")
-            lines.append(f"    last payment {r['latest'].isoformat()}, "
-                         f"{_ago(r['silent'])} — not counted")
+        if r["placeholder"]:
+            if r["monthly"] is None:
+                lines.append(f"- {r['label']}: not estimable")
+            elif not detailed:
+                lines.append(f"- {r['label']}: {_money(r['monthly'])} "
+                             "monthly (est)")
+            else:
+                lines.append(f"- {r['label']} ({r['freq']}): "
+                             f"{_money(r['monthly'])} monthly (placeholder)")
+                lines.append("    no payments yet — the estimate field "
+                             "stands in until the first deposit")
+        elif r["stopped"]:
+            if not detailed:
+                lines.append(f"- {r['label']}: stopped")
+            else:
+                lines.append(f"- {r['label']} ({r['freq']}): stopped")
+                lines.append(f"    last payment {r['latest'].isoformat()}, "
+                             f"{_ago(r['silent'])} — not counted")
         elif r["per_year"] is None:
             lines.append(f"- {r['label']}: not estimable")
-            lines.append(f"    {_plural(r['n'], 'payment')}, latest "
-                         f"{r['latest'].isoformat()} — set a frequency, or "
-                         f"wait until it has {DETECT_MIN}")
+            if detailed:
+                lines.append(f"    {_plural(r['n'], 'payment')}, latest "
+                             f"{r['latest'].isoformat()} — set a frequency, "
+                             f"or wait until it has {DETECT_MIN}")
+        elif not detailed:
+            lines.append(f"- {r['label']}: {_money(r['monthly'])} monthly")
         else:
             tail = f" ({r['reason']})" if r["reason"] else ""
             lines.append(f"- {r['label']} ({r['freq']}): "
@@ -608,12 +748,101 @@ def _income_section(ctx):
             lines.append(f"- {name}: no deposit matching its amount yet")
         else:
             lines.append(f"- {name}: not found in the budget — fix "
-                         "income-sources.md")
+                         "cash-flow.md")
         for note in notes:
             lines.append(f"    check: {note}")
     if ctx["source_problem"]:
         lines.append(f"- check: {ctx['source_problem']}")
     return total, lines
+
+
+# ---------------------------------------------------------------- upcoming
+
+def _upcoming_rows(entries):
+    """([row], total cents) — one row per Upcoming entry: name, cents
+    (None when the amount is missing or not a dollar amount), month text,
+    notes. The month is a best guess and prints only; no math reads it."""
+    rows, total = [], 0
+    for name, e in entries.items():
+        notes = []
+        cents = None
+        a = e.get("amount")
+        if a is None:
+            notes.append("no amount — set one in cash-flow.md")
+        elif not re.fullmatch(AMOUNT_RE, a.strip()):
+            notes.append(f"cash-flow.md gives amount {a!r}, which is not "
+                         "a dollar amount")
+        else:
+            cents = round(float(a.strip().lstrip("$")) * 100)
+            total += cents
+        month = e.get("month", "")
+        if month:
+            try:
+                _parse_month(month)
+            except ValueError:
+                notes.append(f"cash-flow.md gives month {month!r}, "
+                             "not YYYY-MM")
+                month = ""
+        rows.append({"name": name, "cents": cents, "month": month,
+                     "notes": notes})
+    return rows, total
+
+
+def _upcoming_section(rows, total):
+    """The Estimated block's list of one-time expenses ahead; empty when
+    the file lists none."""
+    if not rows:
+        return []
+    lines = ["", f"Upcoming one-time expenses: {_money(total)}"]
+    for r in rows:
+        if r["cents"] is None:
+            lines.append(f"- {r['name']}: no amount")
+        else:
+            tail = f" ({r['month']})" if r["month"] else ""
+            lines.append(f"- {r['name']}: {_money(r['cents'])}{tail}")
+        for note in r["notes"]:
+            lines.append(f"    check: {note}")
+    return lines
+
+
+def _expense_figures(ctx, d, avg):
+    """(rows, total, so_far) — the expense estimate's per-group figures:
+    the average monthly spending, or the current month so far until one
+    complete month exists. rows is [(name, cents)], uncategorized spending
+    last. ONE_OFF_GROUPS never figure — no average exists for them, and a
+    so-far figure would pass a one-time cost off as normal life; their
+    expected costs are hand-listed under Upcoming."""
+    src = d if avg is None else avg
+    cats = ctx["cats"]
+    rows, total = [], 0.0
+    for grp in _expense_groups(ctx):
+        if grp in ONE_OFF_GROUPS:
+            continue
+        g = -sum(net for cid, net in src["cats"].items()
+                 if cats[cid]["grp"] == grp)
+        if round(g / 100):
+            rows.append((grp, g))
+            total += g
+    if round(src["uncat_spend"] / 100):
+        rows.append(("uncategorized", src["uncat_spend"]))
+        total += src["uncat_spend"]
+    return rows, total, avg is None
+
+
+def _expense_estimate(ctx, d, avg):
+    """The Estimated block's expense estimate, mirroring the income
+    estimate: one line per expense group, the so-far flavor marked as
+    such."""
+    rows, total, so_far = _expense_figures(ctx, d, avg)
+    if not rows:
+        return []
+    if so_far:
+        head_tail, row_tail = " — so far this month, no average yet", ""
+    else:
+        head_tail = row_tail = " monthly"
+    lines = ["", f"Expense estimate: {_money(total)}{head_tail}", ""]
+    lines += [f"- {name}: {_money(g)}{row_tail}" for name, g in rows]
+    return lines
 
 
 # ---------------------------------------------------------------- shared context
@@ -632,12 +861,16 @@ def _ctx(conn, today):
     months = {i: _month_data(rows, i, cats, excluded_ids)
               for i in range(first, cur + 1)}
     income_groups = {g["name"] for g in groups if g["is_income"]}
+    oneoff_ids = frozenset(cid for cid, c in cats.items()
+                           if c["grp"] in ONE_OFF_GROUPS)
     sources, problem = _read_sources()
     return {"cats": cats, "groups": groups, "income_groups": income_groups,
+            "oneoff_ids": oneoff_ids,
             "first": first, "cur": cur, "today": today, "months": months,
             "payments": _fetch_income(conn, first),
             "checking": _checking_balance(conn),
-            "source_file": sources, "source_problem": problem}
+            "source_file": sources, "source_problem": problem,
+            "upcoming": _read_upcoming()}
 
 
 def _window(ctx, upto):
@@ -666,38 +899,43 @@ def _expense_groups(ctx):
     return [g["name"] for g in ctx["groups"] if not g["is_income"]]
 
 
-def _resolve_group(ctx, name):
-    want = name.strip()
-    hit = [g["name"] for g in ctx["groups"] if g["name"] == want]
-    if not hit:
-        wf = want.casefold()
-        hit = [g["name"] for g in ctx["groups"] if g["name"].casefold() == wf]
-    if len(hit) == 1:
-        return hit[0]
-    valid = ", ".join(g["name"] for g in ctx["groups"])
-    raise ValueError(f"unknown group {want!r} — groups: {valid}")
-
-
-def _resolve_tracked(ctx, entry):
-    """Category ids for one TRACKED_CATEGORIES entry — bare name, or
-    'group: name' when the bare name is in several groups. [] = not found."""
-    hit = [cid for cid, c in ctx["cats"].items()
-           if entry in (c["name"], f"{c['grp']}: {c['name']}")]
-    return hit if len(hit) == 1 else []
-
-
 # ---------------------------------------------------------------- rows
 
-def _cat_row(name, actual, avg, mode, elapsed):
-    """One category or group line. mode: 'pace' (expected by now),
-    'fixed' (of average), 'month' (average column), 'plain' (no average)."""
+def _hist(ctx, upto, current, get):
+    """The history row of one row: '  - Jul $x (+24%) · Jun $y (-8%)' —
+    the two months before `upto`, newest first, '-' for a month before
+    FIRST_MONTH (the row prints anyway, so a missing history is visible).
+    Same shape as the history row on the Assets and Debt entries. Each
+    percent compares `current` (cents) against that month and is left out
+    when the month is missing or zero. get(month_data) returns the item's
+    cents in that month."""
+    parts = []
+    for i in range(upto - 1, upto - 3, -1):
+        label = calendar.month_abbr[i % 12 + 1]
+        if i < ctx["first"]:
+            parts.append(f"{label} -")
+            continue
+        v = get(ctx["months"][i])
+        pct = f" ({round((current - v) / abs(v) * 100):+d}%)" if v else ""
+        parts.append(f"{label} {_money(v)}{pct}")
+    return "  - " + " · ".join(parts)
+
+
+def _cat_row(name, actual, avg, mode, elapsed, hist=""):
+    """The lines of one category or group row. mode: 'pace' (expected by
+    now plus the whole month), 'fixed' (the whole month alone), 'month'
+    (average column), 'plain' (no average). hist is the history row from
+    _hist, printed underneath."""
     if mode == "plain":
-        return f"- {name}: {_money(actual)}"
-    if mode == "fixed":
-        return f"- {name}: {_money(actual)} of {_money(avg)} average"
-    if mode == "pace":
-        return f"- {name}: {_money(actual)} | expected by now {_money(avg * elapsed)}"
-    return f"- {name}: {_money(actual)} | average {_money(avg)}"
+        line = f"- {name}: {_money(actual)}"
+    elif mode == "fixed":
+        line = f"- {name}: {_money(actual)} | month {_money(avg)}"
+    elif mode == "pace":
+        line = (f"- {name}: {_money(actual)} | expected by now "
+                f"{_money(avg * elapsed)} month {_money(avg)}")
+    else:
+        line = f"- {name}: {_money(actual)} | average {_money(avg)}"
+    return [line, hist] if hist else [line]
 
 
 def _uncat_amounts(d):
@@ -707,78 +945,70 @@ def _uncat_amounts(d):
     return ", ".join(parts)
 
 
-def _tracked_section(ctx, d, avg, mode, elapsed):
-    if not TRACKED_CATEGORIES:
-        return []
-    lines = ["", "Tracked categories:"]
-    for entry in TRACKED_CATEGORIES:
-        ids = _resolve_tracked(ctx, entry)
-        if not ids:
-            lines.append(f"- {entry}: not found — fix TRACKED_CATEGORIES in cash_flow.py")
-            continue
-        cid = ids[0]
-        c = ctx["cats"][cid]
-        income_side = c["grp"] in ctx["income_groups"]
-        actual = d["cats"].get(cid, 0) * (1 if income_side else -1)
-        a = (avg["cats"].get(cid, 0) if avg else 0) * (1 if income_side else -1)
-        row_mode = mode
-        if mode == "pace" and c["grp"] in NO_FORECAST_GROUPS:
-            row_mode = "plain"
-        elif mode == "pace" and (income_side or c["grp"] in FIXED_GROUPS):
-            row_mode = "fixed"
-        lines.append(_cat_row(c["name"], actual, a, row_mode, elapsed))
-    return lines
-
-
-def _group_section(ctx, grp, d, avg, mode, elapsed):
-    """Per-category rows of one group plus its total line."""
-    income_side = grp in ctx["income_groups"]
-    sign = 1 if income_side else -1
-    if mode == "pace" and grp in NO_FORECAST_GROUPS:
-        mode = "plain"
-    elif mode == "pace" and (income_side or grp in FIXED_GROUPS):
-        mode = "fixed"
-    lines = ["", f"{grp} categories:"]
-    total = a_total = 0.0
+def _category_rows(ctx, grp, d, avg, mode, elapsed, hist_upto=None,
+                   combine_personal=False):
+    """One group's per-category rows, indented under its group row; a
+    category prints when it or its average rounds to a dollar. mode and
+    elapsed are the group row's. hist_upto (a month idx) adds the history
+    row under every row. combine_personal joins this group's
+    PERSONAL_CATEGORIES into one row per label, printed after the rest."""
+    sign = 1 if grp in ctx["income_groups"] else -1
+    lines = []
+    joined = {}                 # label -> [category id], in first-seen order
     for cid, c in ctx["cats"].items():
         if c["grp"] != grp:
             continue
+        if combine_personal and c["name"] in PERSONAL_CATEGORIES:
+            joined.setdefault(PERSONAL_CATEGORIES[c["name"]], []).append(cid)
+            continue
         actual = d["cats"].get(cid, 0) * sign
         a = (avg["cats"].get(cid, 0) if avg else 0) * sign
-        total += actual
-        a_total += a
-        if round(actual / 100) or round(a / 100):
-            lines.append(_cat_row(c["name"], actual, a, mode, elapsed))
-    lines.append(_cat_row("total", total, a_total, mode, elapsed))
-    return lines
+        if not round(actual / 100) and not round(a / 100):
+            continue
+        hist = ""
+        if hist_upto is not None:
+            hist = _hist(ctx, hist_upto, actual,
+                         lambda md, cid=cid, sign=sign:
+                         md["cats"].get(cid, 0) * sign)
+        lines += _cat_row(c["name"], actual, a, mode, elapsed, hist)
+    for label, ids in joined.items():
+        actual = sum(d["cats"].get(cid, 0) for cid in ids) * sign
+        a = (sum(avg["cats"].get(cid, 0) for cid in ids) if avg else 0) * sign
+        if not round(actual / 100) and not round(a / 100):
+            continue
+        hist = ""
+        if hist_upto is not None:
+            hist = _hist(ctx, hist_upto, actual,
+                         lambda md, ids=tuple(ids), sign=sign:
+                         sum(md["cats"].get(cid, 0) for cid in ids) * sign)
+        lines += _cat_row(label, actual, a, mode, elapsed, hist)
+    return ["  " + line for line in lines]
 
 
 # ---------------------------------------------------------------- status view
 
 def _projection(ctx, d, avg, win, elapsed, est):
     """The month-end block, average in hand: income from the sources,
-    NO_FORECAST_GROUPS at what was actually spent, FIXED_GROUPS at their
+    ONE_OFF_GROUPS at what was actually spent, FIXED_GROUPS at their
     full average, every other group at pace."""
     cats = ctx["cats"]
     p_spending = d["uncat_spend"] + avg["uncat_spend"] * (1 - elapsed)
     for grp in _expense_groups(ctx):
         avg_g = -sum(net for cid, net in avg["cats"].items()
                      if cats[cid]["grp"] == grp)
-        if grp in NO_FORECAST_GROUPS:
+        if grp in ONE_OFF_GROUPS:
             p_spending += -_group_net(d, cats, grp)
         elif grp in FIXED_GROUPS:
             p_spending += avg_g
         else:
             p_spending += -_group_net(d, cats, grp) + avg_g * (1 - elapsed)
-    pairs = [_totals(ctx["months"][i], cats, ctx["income_groups"]) for i in win]
-    avg_income = sum(p[0] for p in pairs) / len(win)
-    avg_spending = sum(p[1] for p in pairs) / len(win)
+    avg_income, avg_spending = _avg_pair(ctx, win)
     p_leftover = est - p_spending
     run = _streak(_leftovers(ctx, ctx["cur"]))
     color = "green" if p_leftover >= 0 else "red"
     fixed = _join_and([g for g in _expense_groups(ctx) if g in FIXED_GROUPS])
     spent = _join_and([g for g in _expense_groups(ctx)
-                       if g in NO_FORECAST_GROUPS])
+                       if g in ONE_OFF_GROUPS])
     flat = "income from sources" + (f", {fixed} at average" if fixed else "") \
         + (f", {spent} as spent" if spent else "")
     return ["",
@@ -791,167 +1021,217 @@ def _projection(ctx, d, avg, win, elapsed, est):
             f"projected {color}"]
 
 
-def _runs_out(ctx, win):
-    """The runs-out block: CHECKING_ACCOUNT's balance divided by the
-    window's average monthly spending — income deliberately not counted, so
-    the answer is how long the money lasts if nothing more comes in."""
+def _forecast(ctx, est, exp_total):
+    """The Forecast block: CHECKING_ACCOUNT against the estimated income and
+    expenses. Never runs out while the estimate covers itself; otherwise the
+    net spending eats the balance."""
     bal = ctx["checking"]
-    lines = ["", f"How long the money lasts ({CHECKING_ACCOUNT} against "
-                 "average spending, income not counted):"]
     if bal is None:
-        lines.append(f"- account {CHECKING_ACCOUNT!r} not found — fix "
-                     "CHECKING_ACCOUNT in cash_flow.py")
-        return lines
-    lines.append(f"- balance: {_money(bal)}")
-    if not win:
-        lines.append("- first month: no average spending yet")
-        return lines
-    pairs = [_totals(ctx["months"][i], ctx["cats"], ctx["income_groups"])
-             for i in win]
-    avg_spending = sum(p[1] for p in pairs) / len(win)
-    lines.append(f"- average spending: {_money(avg_spending)} monthly")
-    if round(bal / 100) <= 0:
+        return ["", f"How long money lasts with current balance and "
+                    "estimated income and expenses:",
+                f"- account {CHECKING_ACCOUNT!r} not found — fix "
+                "CHECKING_ACCOUNT in cash_flow.py"]
+    burn = exp_total - est
+    lines = ["", "How long money lasts with current balance and estimated "
+                 "income and expenses:"]
+    if round(burn / 100) <= 0:
+        lines.append(f"- never runs out — {_money(-burn)} extra per month")
+    elif round(bal / 100) <= 0:
         lines.append("- already out")
-    elif round(avg_spending / 100) <= 0:
-        lines.append("- average spending is $0 — never runs out")
     else:
-        months = bal / avg_spending
+        months = bal / burn
         when = ctx["today"] + timedelta(days=months * 30.44)
-        lines.append(f"- lasts about {months:.1f} months — runs out around "
-                     f"{when.year:04d}-{when.month:02d}")
+        lines.append(f"- net spending {_money(burn)} monthly, balance "
+                     f"{_money(bal)} lasts about {months:.1f} months — "
+                     f"runs out around {when.year:04d}-{when.month:02d}")
     return lines
 
 
-def _status(ctx, group=""):
-    """Current month, grouped under Estimated (projection, income estimate)
-    and Actual (so far, tracked, runs-out, debt). The projection and the
-    streak need a complete month behind them, so the first month's Estimated
-    block holds the income estimate alone."""
-    today, cur, cats = ctx["today"], ctx["cur"], ctx["cats"]
-    day, days = today.day, _days_in(cur)
-    elapsed = day / days
-    d = ctx["months"][cur]
-    win = _window(ctx, cur)
-    avg = _average([ctx["months"][i] for i in win]) if win else None
-    income, spending = _totals(d, cats, ctx["income_groups"])
-    est, income_lines = _income_section(ctx)
+def _status(ctx, m_idx=None, detailed=False, categories=False,
+            combine_personal=False):
+    """The report for one month — the current one (m_idx None) or a past
+    one — in ### sections. Current month: Estimated (projection, income
+    estimate, expense estimate, upcoming), Actual, Forecast (how long the
+    money lasts against the estimated income and expenses), Assets and
+    Debt (debts.py), Check. The projection and the streak need a complete
+    month behind them; until then the expense estimate falls back to this
+    month so far, marked as such. Past month: the Actual section carries
+    the month's final numbers with the average column, then the categories
+    furthest over and under their average and the streak; Estimated and
+    Forecast are left out (nothing is ahead of a finished month), and
+    Assets and Debt shows the files as of that month's end.
 
-    head = _window_label(win) if win else "first month: no average yet"
-    lines = [f"Budget status — {_label(cur)}, day {day} of {days} | {head}",
-             "", "Estimated:"]
-    if win:
-        lines += _projection(ctx, d, avg, win, elapsed, est)
-    lines += income_lines
-    lines += ["", "Actual:"]
-    lines += ["",
-              "So far:",
-              f"- income: {_money(income)}",
-              f"- spending: {_money(spending)}",
-              f"- income - spending: {_signed(income - spending)}"]
+    Actual: the income total with its category rows, the expense total
+    with its group rows, tracked categories; a past month adds the
+    leftover. categories adds each group's per-category rows under its
+    group row; combine_personal then joins the per-person ones into a
+    "Personal" and a "Personal Subscription" row.
+    detailed=False is the regular report size: income sources
+    one line each, no history rows anywhere, debts at balance and rate
+    only."""
+    today, cur, cats = ctx["today"], ctx["cur"], ctx["cats"]
+    if m_idx is None:
+        m_idx = cur
+    if m_idx > cur:
+        raise ValueError(f"{_label(m_idx)} is in the future")
+    if m_idx < ctx["first"]:
+        raise ValueError(f"data starts {FIRST_MONTH} — earlier months never count")
+    current = m_idx == cur
+    d = ctx["months"][m_idx]
+    win = _window(ctx, m_idx)
+    avg = _average([ctx["months"][i] for i in win],
+                   ctx["oneoff_ids"]) if win else None
+    income, spending = _totals(d, cats, ctx["income_groups"])
+    hist_upto = m_idx if detailed else None
+
+    if current:
+        day, days = today.day, _days_in(cur)
+        elapsed = day / days
+        head = _window_label(win) if win else "first month: no average yet"
+        lines = [f"{_label(cur)}, day {day} of {days} | {head}"]
+        est, income_lines = _income_section(ctx, detailed)
+        up_rows, up_total = _upcoming_rows(ctx["upcoming"])
+        lines += ["", "### Estimated"]
+        if win:
+            lines += _projection(ctx, d, avg, win, elapsed, est)
+        lines += income_lines
+        lines += _expense_estimate(ctx, d, avg)
+        lines += _upcoming_section(up_rows, up_total)
+        avg_income = avg_spending = None
+    else:
+        elapsed = 1.0
+        head = _window_label(win) if win else "first month: no average"
+        lines = [f"Month — {_label(m_idx)} | {head}"]
+        avg_income, avg_spending = _avg_pair(ctx, win) if win else (None, None)
+
+    def total(name, actual, average, get, fmt=_money):
+        """One total line, the average column on a past month with an
+        average, the history row under it when detailed."""
+        line = f"{name}: {fmt(actual)}"
+        if average is not None:
+            line += f" | average {fmt(average)}"
+        lines.append(line)
+        if detailed:
+            lines.append(_hist(ctx, m_idx, actual, get))
+
+    lines += ["", "### Actual", ""]
+    total("Income", income, avg_income,
+          lambda md: _totals(md, cats, ctx["income_groups"])[0])
+    income_mode = "month" if avg and not current else "plain"
+    for cid, c in cats.items():
+        if c["grp"] not in ctx["income_groups"]:
+            continue
+        actual = d["cats"].get(cid, 0)
+        a = avg["cats"].get(cid, 0) if avg else 0
+        if not round(actual / 100) and not round(a / 100):
+            continue
+        hist = _hist(ctx, m_idx, actual,
+                     lambda md, cid=cid: md["cats"].get(cid, 0)) \
+            if detailed else ""
+        lines += _cat_row(c["name"], actual, a, income_mode, elapsed, hist)
+    total("Expenses", spending, avg_spending,
+          lambda md: _totals(md, cats, ctx["income_groups"])[1])
     for grp in _expense_groups(ctx):
         actual = -_group_net(d, cats, grp)
         avg_g = -sum(net for cid, net in avg["cats"].items()
                      if cats[cid]["grp"] == grp) if avg else 0
         if not round(actual / 100) and not round(avg_g / 100):
             continue
-        if not avg or grp in NO_FORECAST_GROUPS:
+        if not avg or grp in ONE_OFF_GROUPS:
             mode = "plain"
+        elif not current:
+            mode = "month"
         elif grp in FIXED_GROUPS:
             mode = "fixed"
         else:
             mode = "pace"
-        lines.append(_cat_row(grp, actual, avg_g, mode, elapsed))
-    lines.append(f"- uncategorized: {_plural(d['n_uncat'], 'transaction')} "
-                 f"({_uncat_amounts(d)})")
-    mode = "pace" if avg else "plain"
-    lines += _tracked_section(ctx, d, avg, mode, elapsed)
-    if group:
-        lines += _group_section(ctx, _resolve_group(ctx, group), d, avg,
-                                mode, elapsed)
-    lines += _runs_out(ctx, win)
-    debt = debts.status_block()
-    if debt:
-        lines += ["", debt]
+        hist = _hist(ctx, m_idx, actual,
+                     lambda md, grp=grp:
+                     -_group_net(md, cats, grp)) if detailed else ""
+        lines += _cat_row(grp, actual, avg_g, mode, elapsed, hist)
+        if categories:
+            lines += _category_rows(ctx, grp, d, avg, mode, elapsed,
+                                    hist_upto, combine_personal)
+    if not current:
+        left_avg = avg_income - avg_spending if avg else None
+        total("Leftover", income - spending, left_avg,
+              lambda md: (lambda t: t[0] - t[1])(
+                  _totals(md, cats, ctx["income_groups"])),
+              fmt=_signed)
+    if not current:
+        lines += _outliers_section(ctx, d, avg, combine_personal)
+        lines += ["", _streak_line(ctx, m_idx)]
+
+    if current:
+        exp_total = _expense_figures(ctx, d, avg)[1]
+        lines += ["", "### Forecast"]
+        lines += _forecast(ctx, est, exp_total)
+        as_of = today
+    else:
+        as_of = date(m_idx // 12, m_idx % 12 + 1, _days_in(m_idx))
+    block, file_checks = debts.status_block(as_of, detailed)
+    if block:
+        lines += ["", "### Assets and Debt", "", block]
+    checks = _checks(d, file_checks)
+    if checks:
+        lines += ["", "### Check"] + [f"- {c}" for c in checks]
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- month view
+def _checks(d, file_checks):
+    """The Check items: uncategorized money, then the finance-file
+    problems debts.status_block found."""
+    checks = []
+    if d["n_uncat"]:
+        checks.append(f"uncategorized: {_plural(d['n_uncat'], 'transaction')}"
+                      f" ({_uncat_amounts(d)})")
+    return checks + file_checks
 
-def _month(ctx, m_idx, group=""):
-    if m_idx == ctx["cur"]:
-        return _status(ctx, group)
-    if m_idx > ctx["cur"]:
-        raise ValueError(f"{_label(m_idx)} is in the future")
-    if m_idx < ctx["first"]:
-        raise ValueError(f"data starts {FIRST_MONTH} — earlier months never count")
+
+def _outliers_section(ctx, d, avg, combine_personal=False):
+    """A past month's categories furthest from their average, the OUTLIERS_N
+    largest gaps; nothing without an average. ONE_OFF_GROUPS categories
+    have no average, so no over/under. combine_personal weighs the
+    per-person categories as one entry per PERSONAL_CATEGORIES label, named
+    by that label, so no per-person figure is named here either."""
+    if not avg:
+        return []
     cats = ctx["cats"]
-    d = ctx["months"][m_idx]
-    win = _window(ctx, m_idx)
-    avg = _average([ctx["months"][i] for i in win]) if win else None
-    income, spending = _totals(d, cats, ctx["income_groups"])
-    header_tail = _window_label(win) if win else "first month: no average"
-    mode = "month" if win else "plain"
+    deltas = []
+    joined = {}                 # label -> its categories' summed gap
+    for cid, c in cats.items():
+        if cid in ctx["oneoff_ids"]:
+            continue
+        sign = 1 if c["grp"] in ctx["income_groups"] else -1
+        delta = (d["cats"].get(cid, 0) - avg["cats"].get(cid, 0)) * sign
+        if combine_personal and c["name"] in PERSONAL_CATEGORIES:
+            label = PERSONAL_CATEGORIES[c["name"]]
+            joined[label] = joined.get(label, 0) + delta
+        elif abs(round(delta / 100)):
+            deltas.append((abs(delta), delta, c["name"]))
+    for label, delta in joined.items():
+        if abs(round(delta / 100)):
+            deltas.append((abs(delta), delta, label))
+    deltas.sort(reverse=True)
+    if not deltas:
+        return []
+    lines = ["", "Outliers vs average:"]
+    for _, delta, name in deltas[:OUTLIERS_N]:
+        word = "over" if delta > 0 else "under"
+        lines.append(f"- {name}: {_money(abs(delta))} {word}")
+    return lines
 
-    lines = [f"Month — {_label(m_idx)} | {header_tail}"]
-    if win:
-        pairs = [_totals(ctx["months"][i], cats, ctx["income_groups"]) for i in win]
-        avg_income = sum(p[0] for p in pairs) / len(win)
-        avg_spending = sum(p[1] for p in pairs) / len(win)
-        lines += [f"- income: {_money(income)} | average {_money(avg_income)}",
-                  f"- spending: {_money(spending)} | average {_money(avg_spending)}",
-                  f"- leftover: {_signed(income - spending)} | average "
-                  f"{_signed(avg_income - avg_spending)}"]
-    else:
-        lines += [f"- income: {_money(income)}",
-                  f"- spending: {_money(spending)}",
-                  f"- leftover: {_signed(income - spending)}"]
 
-    lines += ["", "Groups:"]
-    for g in ctx["groups"]:
-        grp = g["name"]
-        sign = 1 if g["is_income"] else -1
-        actual = _group_net(d, cats, grp) * sign
-        a = (sum(net for cid, net in avg["cats"].items()
-                 if cats[cid]["grp"] == grp) * sign) if avg else 0
-        if round(actual / 100) or round(a / 100):
-            lines.append(_cat_row(grp, actual, a, mode, 1.0))
-    uncat = f"- uncategorized: {_money(d['uncat_spend'])} spending"
-    if avg:
-        uncat += f" | average {_money(avg['uncat_spend'])}"
-    if round(d["uncat_inc"] / 100) or (avg and round(avg["uncat_inc"] / 100)):
-        uncat += f"; {_money(d['uncat_inc'])} income"
-        if avg:
-            uncat += f" | average {_money(avg['uncat_inc'])}"
-    lines.append(uncat)
-
-    lines += _tracked_section(ctx, d, avg, mode, 1.0)
-    if group:
-        lines += _group_section(ctx, _resolve_group(ctx, group), d, avg, mode, 1.0)
-
-    if avg:
-        deltas = []
-        for cid, c in cats.items():
-            sign = 1 if c["grp"] in ctx["income_groups"] else -1
-            delta = (d["cats"].get(cid, 0) - avg["cats"].get(cid, 0)) * sign
-            if abs(round(delta / 100)):
-                deltas.append((abs(delta), delta, c["name"]))
-        deltas.sort(reverse=True)
-        if deltas:
-            lines += ["", "Outliers vs average:"]
-            for _, delta, name in deltas[:OUTLIERS_N]:
-                word = "over" if delta > 0 else "under"
-                lines.append(f"- {name}: {_money(abs(delta))} {word}")
-
+def _streak_line(ctx, m_idx):
+    """A past month's green/red verdict, the streak it ends, and the green
+    tally over the last WINDOW complete months up to it."""
     leftovers = _leftovers(ctx, m_idx + 1)
-    green = leftovers[-1] >= 0
     lastn = leftovers[-WINDOW:]
     tally = (f"green: {sum(1 for v in lastn if v >= 0)} of last "
              f"{_plural(len(lastn), 'month')}")
-    if green:
-        lines += ["", f"Streak: green month — {_streak(leftovers)} in a row; {tally}."]
-    else:
-        lines += ["", f"Streak: red month; {tally}."]
-    return "\n".join(lines)
+    if leftovers[-1] >= 0:
+        return f"Streak: green month — {_streak(leftovers)} in a row; {tally}."
+    return f"Streak: red month; {tally}."
 
 
 # ---------------------------------------------------------------- history view
@@ -971,10 +1251,7 @@ def _history(ctx, months):
         lines.append(f"- {_label(i)}: income {_money(income)} | spending "
                      f"{_money(spending)} | leftover {_signed(left)} | {color}")
     win = _window(ctx, ctx["cur"])
-    pairs = [_totals(ctx["months"][i], ctx["cats"], ctx["income_groups"])
-             for i in win]
-    avg_income = sum(p[0] for p in pairs) / len(win)
-    avg_spending = sum(p[1] for p in pairs) / len(win)
+    avg_income, avg_spending = _avg_pair(ctx, win)
     lines.append(f"- {_window_label(win)}: income {_money(avg_income)} | "
                  f"spending {_money(avg_spending)} | leftover "
                  f"{_signed(avg_income - avg_spending)}")
@@ -1011,10 +1288,10 @@ def _ledger_month(ctx, m_idx):
 
 def ledger_month(month, today=None):
     """{estimate, recurring, one_off, spending} in cents for one complete
-    month (YYYY-MM) — the numbers finance_scan.py caches in the
+    month (YYYY-MM) — the numbers finance_jobs.py caches in the
     monthly-balance file. Raises ValueError for the current month, a future
     one, or one before FIRST_MONTH."""
-    ctx = _ctx(_db(), today or date.today())
+    ctx = _ctx(api_cache.db(), today or date.today())
     m_idx = _parse_month(month)
     if m_idx >= ctx["cur"]:
         raise ValueError(f"{month} is not a complete month yet")
@@ -1025,22 +1302,36 @@ def ledger_month(month, today=None):
 
 # ---------------------------------------------------------------- entry points
 
-def build_report(month="", group="", today=None):
-    """Status (month empty) or one month (YYYY-MM) vs average; group expands
-    that group into per-category rows. Raises ValueError on bad arguments."""
-    ctx = _ctx(_db(), today or date.today())
+def build_report(month="", today=None, detailed=False, categories=False,
+                 combine_personal=False):
+    """The current month's status (month empty or the current one) or a
+    past month (YYYY-MM) vs its average. detailed is the report size:
+    False (regular) hides the income sub-lines, every history row and the
+    debt facts. categories adds each group's per-category rows;
+    combine_personal joins the per-person ones (PERSONAL_CATEGORIES) into
+    one row each, so no per-person figure is named. Raises ValueError on
+    bad arguments."""
+    ctx = _ctx(api_cache.db(), today or date.today())
     month = (month or "").strip()
-    group = (group or "").strip()
-    if month:
-        return _month(ctx, _parse_month(month), group)
-    return _status(ctx, group)
+    m_idx = _parse_month(month) if month else None
+    return _status(ctx, m_idx, detailed, categories, combine_personal)
+
+
+def check_report(today=None):
+    """The current month's Check items alone — the daily email's Check
+    section: uncategorized money and finance-file problems. [] when there
+    is nothing to say."""
+    today = today or date.today()
+    ctx = _ctx(api_cache.db(), today)
+    _, file_checks = debts.status_block(today, False)
+    return _checks(ctx["months"][ctx["cur"]], file_checks)
 
 
 def history_report(months=6, today=None):
     """One line per complete month, newest first, plus the average line."""
     if not isinstance(months, int) or not 1 <= months <= HISTORY_CAP:
         raise ValueError(f"months must be 1-{HISTORY_CAP}")
-    return _history(_ctx(_db(), today or date.today()), months)
+    return _history(_ctx(api_cache.db(), today or date.today()), months)
 
 
 def main():
@@ -1050,14 +1341,20 @@ def main():
             i = args.index("--history")
             print(history_report(int(args[i + 1])))
             return
-        month = group = ""
-        while args:
-            arg = args.pop(0)
-            if arg == "--group":
-                group = args.pop(0)
+        month = ""
+        detailed = categories = combine_personal = False
+        for arg in args:
+            if arg == "--detailed":
+                detailed = True
+            elif arg == "--categories":
+                categories = True
+            elif arg == "--combine-personal":
+                combine_personal = True
             else:
                 month = arg
-        print(build_report(month=month, group=group))
+        print(build_report(month=month, detailed=detailed,
+                           categories=categories,
+                           combine_personal=combine_personal))
     except (ValueError, IndexError) as e:
         print(f"REJECTED: {e}", file=sys.stderr)
         sys.exit(1)

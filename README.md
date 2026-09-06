@@ -9,17 +9,17 @@ An add-on to my personal assistant setup (currently [Hermes Agent](https://herme
 Additionally:
 
 - Builds per-person finance reports for specific categories, runs research tasks, and audits the system
-- Bonus: a dashboard with recent tool-use history, trends, and Model Context Protocol (MCP), service, and cron status
+- Bonus: a dashboard with recent tool-use history, trends, model roles, and Model Context Protocol (MCP) and service status
 
 The goal is to lighten the mental load of tracking information that comes from many sources and could belong in many destinations. New actions and modules are quick to add.
 
-This repo is a slice of that larger setup, with sample data. It's built for my own needs, so treat it as ideas and inspiration rather than a perfect fit for everyone else.
+This repo is a slice of that larger setup. The screenshots come from the actions page's demo mode, which feeds the page invented data (`services/actions/demo.py`); the dashboard shots use a made-up snapshot. It's built for my own needs, so treat it as ideas and inspiration rather than a perfect fit for everyone else.
 
 ## What's in this repo
 
 - `app/` — the web pages and their shared scripts
 - `services/actions/` — the Python service behind the actions page: scanners, queue, finance, research, audit ([setup notes](services/actions/SETUP.md))
-- `services/mcp/` — mini MCP servers exposing tool APIs
+- `services/mcp/` — mini MCP servers exposing tool APIs, plus the helper modules the actions service imports from them (`actual/`, `common/`)
 - `hermes/` — Hermes Agent integration: a status tool and a skill ([setup notes](hermes/iris-status/SETUP.md))
 - `screenshots/` — images for this README
 
@@ -55,13 +55,13 @@ PDF texted in a family chat, with a guessed folder and the extracted text:
 
 ## Additional tabs
 
-Three smaller tabs round out the actions page. Not all of their machinery is part of this slice. The finance report area is a stub that returns canned sample text. The research and audit areas are the real modules, but the scripts they trigger are not included, so their run buttons have nothing to call here.
+Four smaller tabs round out the actions page, plus a system console. Not all of their machinery is part of this slice: the research and audit areas are the real modules, but the scripts they trigger are not included, so their run buttons have nothing to call here.
 
-The finance report builds the daily report email on demand and shows the text. Nothing runs against the budget, nothing is emailed:
+The finance report builds each part of the report email on demand and shows the text. Nothing is sent: the email draft key saves the text as a mail draft, the save key writes it to a file:
 
 ![The finance report area](screenshots/actions-report.png)
 
-The research area: recurring web-research topics, each with its cadence and last run. A topic that keeps failing gets flagged:
+The web research area: recurring research topics, each with its cadence and last run. A topic that keeps failing gets flagged:
 
 ![The research area](screenshots/actions-research.png)
 
@@ -69,9 +69,13 @@ The audit area runs a scripted audit of the whole setup; each category with find
 
 ![The audit area](screenshots/actions-audit.png)
 
+The jobs area lists every scheduled job with its recent durations, failures, last and next run, and a run key. A row expands to its schedule and retry log:
+
+![The jobs area](screenshots/actions-jobs.png)
+
 ## The dashboard
 
-The behind-the-scenes page: which tools were called, which MCP servers, services, and cron jobs are running, and what's failing. Shown here: recently called Hermes jobs with their parameters, and a chart of tool calls over the last hour, day, and week.
+The behind-the-scenes page: which tools were called, which MCP servers and services are running, which model fills each role, and what's failing. Shown here: recently called tools with their parameters, and the tool catalogue with call counts over the last hour, day, and week.
 
 ![The dashboard, tools view](screenshots/dashboard-overview.png)
 
@@ -155,17 +159,21 @@ Both pages are iOS home-screen apps; most approvals happen from a phone:
 
 ![The actions page at phone width](screenshots/actions-phone.png)
 
-Dashboard panels: scheduled jobs with interval, last run, and a run button...
+Dashboard panels: services with their ports and uptime, and the MCP servers with their last use...
 
-![Jobs panel](screenshots/dashboard-panel-jobs.png)
+![Services and MCP panels](screenshots/dashboard-panel-services.png)
+
+...the models each profile uses, by role...
+
+![Models panel](screenshots/dashboard-panel-models.png)
 
 ...the tool catalogue, parsed from the MCP server sources, with hour/day/week call counts...
 
 ![Tool catalogue](screenshots/dashboard-panel-tools.png)
 
-...and sessions grouped by model:
+...and sessions grouped by model and by surface:
 
-![Sessions by model](screenshots/dashboard-panel-sessions.png)
+![Sessions by model and surface](screenshots/dashboard-panel-sessions.png)
 
 The dashboard on a phone:
 

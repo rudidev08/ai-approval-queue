@@ -1,14 +1,16 @@
-"""Research area — the vault's recurring web-research topics: one row per
-topic with its state, a run key, and a delete key.
+"""Research area — the vault's recurring research topics: one row per
+topic with its state, a run key, and two delete keys (report, topic).
 
 Served by server.py (one process, one page). The topics and reports live in
-the vault (vault/research/topics, vault/research/reports), written by the
-research MCP server (services/mcp/research) and its driver's batch; this area
-only reads that tree. A run spawns the same driver the MCP server's run_report
-spawns, detached the same way: the page's feedback ends at "started", and the
-finished report arrives by email like a batch run's would. A delete removes
-the topic's report and failure dump, keeping the topic, so the next run
-starts from scratch — the MCP server's delete_report semantics.
+the vault (vault/research/topics, vault/research/reports), written by
+the research MCP server (services/mcp/research) and its driver's
+batch; this area only reads that tree. A run spawns the same driver the MCP
+server's run_report spawns, detached the same way: the page's feedback ends at
+"started", and the finished report arrives by email like a batch run's would.
+Delete report removes the topic's report and failure dump, keeping the topic,
+so the next run starts from scratch — the MCP server's delete_report
+semantics. Delete topic removes the topic file and, with it, its report and
+failure dump, so nothing is left behind as an orphan.
 
 A row's state carries the topic's last successful run (from the driver's
 runs log), a failure count while the log shows consecutive failures, and a
@@ -28,10 +30,12 @@ Endpoints (HANDLERS/GET_HANDLERS; guards and dispatch live in server.py):
   row shows. 400 on a malformed or unknown slug
 - POST /api/research/run     body {"slug"}: spawn driver.py --topic slug.
   400 on a malformed or unknown slug, 500 when the driver cannot start
-- POST /api/research/delete  body {"slug"}: delete the slug's report and
-  failure dump. 400 on a malformed slug or when neither file exists
-- POST /api/research/clear   body {"slug"}: clear the topic's failure flag.
-  400 on a malformed or unknown slug, or when the topic is not failing
+- POST /api/research/delete_report  body {"slug"}: delete the slug's
+  report and failure dump. 400 on a malformed slug or when neither file exists
+- POST /api/research/delete_topic   body {"slug"}: delete the topic file
+  plus its report and failure dump. 400 on a malformed or unknown slug
+- POST /api/research/clear   body {"slug"}: clear the topic's failure
+  flag. 400 on a malformed or unknown slug, or when the topic is not failing
 """
 
 import json
@@ -41,15 +45,15 @@ import re
 import subprocess
 from datetime import datetime
 
-from common import STATE_DIR
+from common import STATE_DIR, cron_job
 
 APP = pathlib.Path(__file__).resolve().parent
 IRIS = APP.parent.parent
 DRIVER = IRIS / "services" / "mcp" / "research" / "driver.py"
-VAULT = IRIS / "vault" / "research"
+VAULT = pathlib.Path.home() / "Iris" / "vault" / "research"
 TOPICS = VAULT / "topics"
 REPORTS = VAULT / "reports"
-RUNS = pathlib.Path.home() / ".local" / "state" / "research" / "runs.jsonl"
+RUNS = pathlib.Path.home() / "Local" / "iris-research" / "runs.jsonl"
 RUNNING = RUNS.with_name("running.json")  # the driver's in-flight marker
 RUNNING_TTL = 2100  # seconds an entry stays live: the driver's 1800 s run timeout plus slack
 PYTHON = "/usr/bin/python3"        # the interpreter the MCP server spawns the driver with
@@ -59,7 +63,6 @@ CLEARED = STATE_DIR / "research-cleared.json"   # this service's own file
 # the cron job whose batch runs the topics; its next_run_at gives the area
 # its next-batch stamp (the same read as the messages area)
 CRON_JOB = "research-batch"
-CRON_JOBS = pathlib.Path.home() / ".hermes/cron/jobs.json"
 
 # what the driver's text_to_filename produces; a slug is one path component,
 # so a matching slug cannot walk out of the vault
@@ -147,12 +150,7 @@ def _cleared():
 def _next_batch():
     """The batch job's next_run_at stamp, None when the cron file is
     unreadable or the job unknown."""
-    try:
-        job = next((j for j in json.loads(CRON_JOBS.read_text())["jobs"]
-                    if j.get("name") == CRON_JOB), None)
-        return (job or {}).get("next_run_at") or None
-    except (OSError, ValueError, KeyError):
-        return None
+    return (cron_job(CRON_JOB) or {}).get("next_run_at") or None
 
 
 def _topics():
@@ -224,20 +222,36 @@ def _h_run(body):
     return 200, {"started": slug}
 
 
-def _h_delete(body):
-    slug = body.get("slug") or ""
-    if not SLUG_RE.fullmatch(slug):
-        return 400, {"error": "bad slug"}
-    targets = [p for p in (REPORTS / (slug + ".md"),
-                           REPORTS / ("error-" + slug + ".md")) if p.exists()]
-    if not targets:
-        return 400, {"error": "no report for this topic"}
+def _report_files(slug):
+    return [p for p in (REPORTS / (slug + ".md"),
+                        REPORTS / ("error-" + slug + ".md")) if p.exists()]
+
+
+def _unlink(targets):
     try:
         for p in targets:
             p.unlink()
     except OSError as e:
         return 500, {"error": str(e)}
     return 200, {"deleted": [p.name for p in targets]}
+
+
+def _h_delete_report(body):
+    slug = body.get("slug") or ""
+    if not SLUG_RE.fullmatch(slug):
+        return 400, {"error": "bad slug"}
+    targets = _report_files(slug)
+    if not targets:
+        return 400, {"error": "no report for this topic"}
+    return _unlink(targets)
+
+
+def _h_delete_topic(body):
+    slug = body.get("slug") or ""
+    topic = TOPICS / (slug + ".md")
+    if not SLUG_RE.fullmatch(slug) or not topic.exists():
+        return 400, {"error": "unknown topic"}
+    return _unlink([topic] + _report_files(slug))
 
 
 def _h_clear(body):
@@ -258,7 +272,8 @@ def _h_clear(body):
 
 
 HANDLERS = {"/api/research/run": _h_run,
-            "/api/research/delete": _h_delete,
+            "/api/research/delete_report": _h_delete_report,
+            "/api/research/delete_topic": _h_delete_topic,
             "/api/research/clear": _h_clear}
 
 GET_HANDLERS = {"/api/research/report": _h_report}

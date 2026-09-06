@@ -61,28 +61,28 @@ class HermesAuditTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         tmp = pathlib.Path(self._tmp.name)
         self._saved = (hermes_audit.STATE, hermes_audit.LOCK, hermes_audit.RUN,
-                       hermes_audit.ERR, hermes_audit.DISMISSED,
+                       hermes_audit.ERR, hermes_audit.EXPECTED,
                        hermes_audit._child, common.STATE_DIR,
-                       hermes_audit.CRON_JOBS, hermes_audit.CRON_EXECUTIONS,
+                       common.CRON_JOBS,
                        subprocess.Popen, subprocess.run)
         hermes_audit.STATE = tmp
         hermes_audit.LOCK = tmp / "lock"
         hermes_audit.RUN = tmp / "run.json"
         hermes_audit.ERR = tmp / "last-run.err"
-        hermes_audit.DISMISSED = tmp / "hermes-audit-dismissed.json"
+        hermes_audit.EXPECTED = tmp / "expected.yaml"
         hermes_audit._child = None
         common.STATE_DIR = tmp
-        # absent stand-ins: no test here may read the real cron files
-        hermes_audit.CRON_JOBS = tmp / "no-jobs.json"
-        hermes_audit.CRON_EXECUTIONS = tmp / "no-executions.db"
+        # absent stand-in: no test here may read the real cron files
+        common.CRON_JOBS = tmp / "no-jobs.json"
         self.held = None
 
     def tearDown(self):
         if self.held is not None:
             self.held.close()
         (hermes_audit.STATE, hermes_audit.LOCK, hermes_audit.RUN, hermes_audit.ERR,
-         hermes_audit.DISMISSED, hermes_audit._child, common.STATE_DIR,
-         hermes_audit.CRON_JOBS, hermes_audit.CRON_EXECUTIONS,
+         hermes_audit.EXPECTED,
+         hermes_audit._child, common.STATE_DIR,
+         common.CRON_JOBS,
          subprocess.Popen, subprocess.run) = self._saved
         self._tmp.cleanup()
 
@@ -111,10 +111,6 @@ class HermesAuditTest(unittest.TestCase):
         self.write_run(rec)
         got = hermes_audit.state()
         self.assertEqual((got["running"], got["error"]), (False, None))
-        # the record is passed through, every category gaining the count of
-        # its dismissed findings
-        for cat in rec["categories"]:
-            cat["dismissed"] = 0
         self.assertEqual(got["run"], rec)
 
     def test_state_is_running_while_the_lock_is_held(self):
@@ -171,7 +167,7 @@ class HermesAuditTest(unittest.TestCase):
     # ---- cron job stamps ----
 
     def test_job_fields_read_the_job_record(self):
-        hermes_audit.CRON_JOBS.write_text(json.dumps({"jobs": [
+        common.CRON_JOBS.write_text(json.dumps({"jobs": [
             {"name": "hermes-audit", "id": "x",
              "last_run_at": "2026-08-16T08:10:00-07:00",
              "next_run_at": "2026-08-23T08:10:00-07:00",
@@ -183,13 +179,13 @@ class HermesAuditTest(unittest.TestCase):
         self.assertFalse(out["job_last_failed"])
 
     def test_job_fields_flag_a_failed_run(self):
-        hermes_audit.CRON_JOBS.write_text(json.dumps({"jobs": [
+        common.CRON_JOBS.write_text(json.dumps({"jobs": [
             {"name": "hermes-audit", "last_run_at": "2026-08-16T08:10:00",
              "next_run_at": None, "last_status": "error"}]}))
         self.assertTrue(hermes_audit._job_fields()["job_last_failed"])
 
     def test_job_fields_before_the_job_exists(self):
-        hermes_audit.CRON_JOBS.write_text(json.dumps({"jobs": []}))
+        common.CRON_JOBS.write_text(json.dumps({"jobs": []}))
         self.assertEqual(hermes_audit._job_fields(),
                          {"job_last_run_at": None, "job_next_run_at": None,
                           "job_last_failed": False})
@@ -244,123 +240,80 @@ class HermesAuditTest(unittest.TestCase):
         self.assertEqual(code, 500)
         self.assertIn("TimeoutExpired", body["error"])
 
-    # ---- dismissing findings ----
+    # ---- ignoring doctor warnings for good ----
 
-    def warned(self, *findings):
-        """A finished pass whose backups category carries `findings`, written
-        to the record. Returns the record."""
-        rec = record([("tool approvals", "ok"), ("backups", "warn")])
+    YAML = ('# comment above\n'
+            'doctor_known:\n'
+            '  - "⚠ browser (system dependency not met)"\n'
+            '\n'
+            'other_list:\n'
+            '  - "kept"\n')
+
+    def doctored(self, *findings):
+        """A finished pass whose diagnostics category carries `findings`, and
+        an expected.yaml with a one-entry doctor_known list."""
+        rec = record([("tool approvals", "ok"), ("hermes diagnostics", "warn")])
         rec["categories"][1]["findings"] = list(findings)
         self.write_run(rec)
+        hermes_audit.EXPECTED.write_text(self.YAML)
         return rec
 
-    def dismiss_file(self):
-        return json.loads(hermes_audit.DISMISSED.read_text())
+    def test_ignore_doctor_appends_to_the_known_list(self):
+        warn = "⚠ a2a (system dependency not met)"
+        rec = self.doctored(f"iris: new doctor warning — {warn}",
+                            f"ops: new doctor warning — {warn}")
+        code, body = hermes_audit.ignore_doctor(
+            {"category": "hermes diagnostics",
+             "finding": f"iris: new doctor warning — {warn}"})
+        self.assertEqual((code, body), (200, {"ignored": True}))
+        # the entry lands at the end of the block; comments and the list
+        # after it are untouched
+        self.assertEqual(hermes_audit.EXPECTED.read_text(),
+                         self.YAML.replace('\n\nother_list',
+                                           f'\n  - "{warn}"\n\nother_list'))
 
-    def test_state_hides_a_dismissed_finding_and_counts_it(self):
-        rec = self.warned("one", "two")
-        hermes_audit.dismiss({"category": "backups", "finding": "one"})
-        cats = hermes_audit.state()["run"]["categories"]
-        self.assertEqual(cats[1]["findings"], ["two"])
-        self.assertEqual(cats[1]["dismissed"], 1)
-        # a clean category is counted too, so the page can read it unguarded
-        self.assertEqual(cats[0]["dismissed"], 0)
-        # the record on disk is untouched — the report and the MCP tools read it
-        self.assertEqual(json.loads(hermes_audit.RUN.read_text()), rec)
+    def test_ignore_doctor_skips_an_entry_already_known(self):
+        warn = "⚠ browser (system dependency not met)"
+        self.doctored(f"iris: new doctor warning — {warn}")
+        code, _ = hermes_audit.ignore_doctor(
+            {"category": "hermes diagnostics",
+             "finding": f"iris: new doctor warning — {warn}"})
+        self.assertEqual(code, 200)
+        self.assertEqual(hermes_audit.EXPECTED.read_text(), self.YAML)
 
-    def test_a_fully_dismissed_category_stays_warn(self):
-        # the page needs the state to tell "hidden" from "clean"
-        self.warned("one")
-        hermes_audit.dismiss({"category": "backups", "finding": "one"})
-        cat = hermes_audit.state()["run"]["categories"][1]
-        self.assertEqual((cat["state"], cat["findings"], cat["dismissed"]),
-                         ("warn", [], 1))
+    def test_ignore_doctor_refuses_a_finding_without_the_marker(self):
+        self.doctored("iris: hermes doctor exited 2")
+        code, body = hermes_audit.ignore_doctor(
+            {"category": "hermes diagnostics",
+             "finding": "iris: hermes doctor exited 2"})
+        self.assertEqual(code, 400)
+        self.assertIn("only doctor warnings", body["error"])
+        self.assertEqual(hermes_audit.EXPECTED.read_text(), self.YAML)
 
-    def test_a_new_pass_clears_the_dismissed_list(self):
-        self.warned("one")
-        hermes_audit.dismiss({"category": "backups", "finding": "one"})
-        # the next run reseeds the record with its own started_at
-        later = self.warned("one")
-        later["started_at"] = stamp(1)
-        self.write_run(later)
-        cat = hermes_audit.state()["run"]["categories"][1]
-        self.assertEqual((cat["findings"], cat["dismissed"]), (["one"], 0))
-
-    def test_state_survives_an_unreadable_dismissed_list(self):
-        self.warned("one")
-        hermes_audit.DISMISSED.write_text("{ not json")
-        cat = hermes_audit.state()["run"]["categories"][1]
-        self.assertEqual((cat["findings"], cat["dismissed"]), (["one"], 0))
-
-    def test_state_drops_entries_that_are_not_a_pair_of_strings(self):
-        rec = self.warned("one")
-        hermes_audit.DISMISSED.write_text(json.dumps(
-            {"run": rec["started_at"],
-             "findings": [["backups"], {"a": 1}, ["backups", "one"]]}))
-        cat = hermes_audit.state()["run"]["categories"][1]
-        self.assertEqual((cat["findings"], cat["dismissed"]), ([], 1))
-
-    def test_dismiss_stamps_the_pass_and_stores_the_pair(self):
-        rec = self.warned("one", "two")
-        code, body = hermes_audit.dismiss({"category": "backups",
-                                           "finding": "two"})
-        self.assertEqual((code, body), (200, {"dismissed": True}))
-        self.assertEqual(self.dismiss_file(),
-                         {"run": rec["started_at"],
-                          "findings": [["backups", "two"]]})
-
-    def test_two_dismisses_keep_both(self):
-        self.warned("one", "two")
-        hermes_audit.dismiss({"category": "backups", "finding": "one"})
-        hermes_audit.dismiss({"category": "backups", "finding": "two"})
-        self.assertEqual(self.dismiss_file()["findings"],
-                         [["backups", "one"], ["backups", "two"]])
-
-    def test_dismiss_refuses_a_finding_the_pass_does_not_carry(self):
-        self.warned("one")
-        code, body = hermes_audit.dismiss({"category": "backups",
-                                           "finding": "not in the pass"})
+    def test_ignore_doctor_refuses_a_finding_not_in_the_pass(self):
+        self.doctored("iris: new doctor warning — ⚠ x (y)")
+        code, body = hermes_audit.ignore_doctor(
+            {"category": "hermes diagnostics",
+             "finding": "iris: new doctor warning — ⚠ stale (z)"})
         self.assertEqual(code, 404)
         self.assertIn("reload the page", body["error"])
-        self.assertFalse(hermes_audit.DISMISSED.exists())
+        self.assertEqual(hermes_audit.EXPECTED.read_text(), self.YAML)
 
-    def test_dismiss_refuses_a_category_still_running(self):
-        # a running category carries no findings yet, so it refuses itself
-        rec = record([("backups", "running")])
-        self.write_run(rec)
-        code, _ = hermes_audit.dismiss({"category": "backups", "finding": "one"})
-        self.assertEqual(code, 404)
-
-    def test_dismiss_refuses_an_unknown_category(self):
-        self.warned("one")
-        code, body = hermes_audit.dismiss({"category": "nope", "finding": "one"})
-        self.assertEqual(code, 404)
-        self.assertIn("no category", body["error"])
-
-    def test_dismiss_refuses_before_any_run(self):
-        code, body = hermes_audit.dismiss({"category": "backups",
-                                           "finding": "one"})
-        self.assertEqual(code, 404)
-        self.assertIn("no audit pass", body["error"])
-
-    def test_restore_removes_the_list(self):
-        self.warned("one")
-        hermes_audit.dismiss({"category": "backups", "finding": "one"})
-        code, body = hermes_audit.restore({})
-        self.assertEqual((code, body), (200, {"restored": True}))
-        self.assertFalse(hermes_audit.DISMISSED.exists())
-        cat = hermes_audit.state()["run"]["categories"][1]
-        self.assertEqual((cat["findings"], cat["dismissed"]), (["one"], 0))
-
-    def test_restore_with_nothing_dismissed_is_not_an_error(self):
-        self.assertEqual(hermes_audit.restore({}), (200, {"restored": True}))
+    def test_ignore_doctor_reports_a_missing_known_list(self):
+        self.doctored("iris: new doctor warning — ⚠ x (y)")
+        hermes_audit.EXPECTED.write_text("other_list:\n  - \"kept\"\n")
+        code, body = hermes_audit.ignore_doctor(
+            {"category": "hermes diagnostics",
+             "finding": "iris: new doctor warning — ⚠ x (y)"})
+        self.assertEqual(code, 500)
+        self.assertIn("doctor_known", body["error"])
 
     # ---- area interface ----
 
-    def test_handlers_cover_the_five_endpoints(self):
+    def test_handlers_cover_the_four_endpoints(self):
         self.assertEqual(sorted(hermes_audit.HANDLERS),
-                         ["/api/hermes-audit/dismiss",
-                          "/api/hermes-audit/reset", "/api/hermes-audit/restore",
+                         ["/api/hermes-audit/ignore-doctor",
+                          "/api/hermes-audit/reset",
                           "/api/hermes-audit/run", "/api/hermes-audit/stop"])
 
 

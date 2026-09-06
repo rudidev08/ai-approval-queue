@@ -4,8 +4,9 @@ Served by server.py (one process, one page); this module owns everything
 email: the LLM cron job's scan/save surface, the intake surface the chat
 agent's add_to_actions tool posts to, the set/row state, and the
 executors that run approved rows for real — calendar create/update/delete
-through the host app's macos_calendar server, email archive through a
-long-lived jmap_mail stdio child, mirror kick through the host,
+through the host app's macos_calendar server, reminder create through
+the host app's reminders server, email archive through a long-lived
+jmap_mail stdio child, mirror kick through the host,
 transaction categorization through the finance area's write helper
 (categorize_transaction rows, born from a helper's emailed answers to a
 categorize ask — see finance.py's module docstring).
@@ -27,7 +28,7 @@ State lives in common.STATE_DIR (dir 0700, files 0600):
 Execution semantics: rows store selectors, not ids. At
 execute time the service re-lists the selector's day (calendar) or
 re-searches the inbox (email). Listings come back as JSON (the tools'
-format="json"); both parsers fail closed — unparseable JSON, a count
+format="json"); every parser fails closed — unparseable JSON, a count
 mismatch, a warning, or a malformed entry raises ListingError and the row
 fails. Every selector row carries args.snapshot (notes, location, end,
 repeats — the event's exact fields), recorded by the save endpoint from
@@ -44,8 +45,11 @@ recurrence), update against the row's new values. PARTIAL: is
 a failure marker, and delete/archive counts are verified against the
 request. archive_email compares id + subject only and goes precheck_failed on any
 mismatch, archiving nothing. open_email rows are display-only: the page's
-open button is a plain webmail link, approve (the done button) is a no-op
-that marks the row handled. One row executes at a time area-wide:
+open button is a plain Webmail link, approve (the done button) is a no-op
+that marks the row handled. create_reminder writes one Apple Reminders
+entry through the host app's reminders server: the tool's own SUCCESS line
+is the proof (the id comes back from the EventKit save). One row executes at
+a time area-wide:
 resolve 409s an approve while another row is in_progress, and each approved
 row runs in its own thread. mcp itself is imported lazily inside the
 tool-call layer so the test suite can run under plain python3 with the
@@ -59,7 +63,8 @@ one match = success, zero = pending, more = unknown; update — reads as the
 new values = success, reads as the old snapshot = pending, else unknown;
 archive — all members out of the inbox = success, all in = pending, mixed =
 unknown; mirror_kick = pending (safe to re-run: the mirror prunes stale
-copies and never duplicates). Unreachable servers leave the row unknown;
+copies and never duplicates); create_reminder — an open reminder of that
+exact name on that list = success, none = pending. Unreachable servers leave the row unknown;
 every outcome lands in the log as a row_reconciled line.
 
 Endpoints (HANDLERS; guards and dispatch live in server.py):
@@ -73,24 +78,35 @@ Endpoints (HANDLERS; guards and dispatch live in server.py):
                      every set record — a blank slate, with the decisions
                      log as the record
 - POST /api/emails/hide     {set_id} or {all: true}: take a finished set's
-                     card off the page before its 24 h window ends. Only a
-                     resolved set can be hidden (409 otherwise); the record,
-                     the ledger and the log are untouched
-- GET  /api/emails/body     ?set_id&email_id — that member email's own text
-                     (header block + body, get_email's rendering), read live
-                     for the page's expanded row. An id the webmail child no
-                     longer knows is re-registered by one mailbox-wide search
-                     on the subject before the fetch retries; a failed fetch
-                     is a 502 carrying the tool's first line
+                     card off the page before its 24 h window ends. A
+                     resolved set qualifies; by set_id a stuck one does too
+                     (still pending, no row waiting or running, at least
+                     one row failed) — hiding it settles it as resolved,
+                     accepting the failed rows as final (409 otherwise).
+                     all: true takes resolved sets only. The ledger and the
+                     log are untouched
+- GET  /api/emails/body     ?email_id — that email's own text (header block +
+                     body, get_email's rendering, uncut), read live for the
+                     page's expanded row and for the agent's read_email tool.
+                     The id must be one the service has seen: the scan listing
+                     while the mail is in the inbox, or any set that holds it.
+                     An id the webmail child no longer knows is re-registered
+                     by one mailbox-wide search on the subject before the fetch
+                     retries; a failed fetch is a 502 carrying the tool's first
+                     line
 - POST /api/emails/rescan   starts the email-scan cron job detached — the
                      agent run that scans and proposes; returns at once,
                      results arrive over the next few page polls
 - POST /api/emails/inbox-scan  the cron agent's scan (single-flight, 409 while one
-                     runs): provably-complete inbox listing, trim, new
-                     emails with capped bodies (ICS facts ride outside the
-                     cap), a per-uid invitation timeline over the batch,
+                     runs): provably-complete inbox listing, trim, every new
+                     email with a ~400-character snippet (read_email widens
+                     one), a per-uid invitation timeline over the batch,
                      pending-set summaries; failed body fetches land in
-                     fetch_failed, never fail the scan. Mail from an
+                     fetch_failed, never fail the scan. Injected mail and a
+                     finance-review reply carry their ~4 KB body instead —
+                     the agent must act on that content — and an invitation
+                     also keeps its link list; ICS facts always ride outside
+                     the cut. Mail from an
                      IGNORE_EMAIL_FROM sender, and mail addressed to an
                      IGNORE_EMAIL_TO recipient, is dropped and never handed
                      over — Iris's own address is both. A new email whose
@@ -135,12 +151,17 @@ Endpoints (HANDLERS; guards and dispatch live in server.py):
                      and still uncategorized, the category a real one) and
                      its display facts are stamped as args.transaction from
                      the ask store, never authored by the scan;
-                     then, under the global lock, whitelist/typed row
-                     validation (including optional row-level display data:
-                     series, suggestion), archive rows bound to member
-                     emails and refused on iris-source members (injected
-                     mail stays as chat history), intent consumption for
-                     iris-source members,
+                     then, under the global lock: emails is a list of id
+                     strings, each resolved against the scan's listing cache
+                     (state["listing"]) — subject, from and receivedAt are
+                     stamped from that cache, never authored by the scan, an
+                     unknown id is a 400; archive_email/open_email rows
+                     likewise carry member ids only and get the same stamped
+                     facts; whitelist/typed row validation (including
+                     optional row-level display data: series, suggestion),
+                     archive rows bound to member emails and refused on
+                     iris-source members (injected mail stays as chat
+                     history), intent consumption for iris-source members,
                      auto-supersede on shared members (ignore included),
                      deny guard on overlapping denials
 
@@ -176,13 +197,22 @@ from common import _log, _now, _sha256
 
 APP = pathlib.Path(__file__).resolve().parent
 IRIS = APP.parent.parent
+sys.path.append(str(IRIS / "services" / "mcp" / "common"))
+import call_host_tool  # noqa: E402
+import hermes_env  # noqa: E402
+
 STATE_FILE = common.STATE_DIR / "state.json"
 
 # server-side whitelist: every saved row is validated against these, and
 # anything else is rejected before it can ever reach an executor
 ROW_KINDS = {"create_event", "update_event", "delete_event", "archive_email",
-             "mirror_kick", "open_email", "categorize_transaction"}
+             "mirror_kick", "open_email", "categorize_transaction",
+             "create_reminder"}
 CALENDARS = {"Personal", "Partner"}
+# the Apple Reminders lists a row may write: the user's own two (Next for soon,
+# Later for later) and the two per-person shared ones
+REMINDER_LISTS = {"Next", "Later", "Alex", "Riley"}
+REMINDER_NOTES_CAP = 200   # the reminders server's own cap on notes
 SPANS = {"this", "future"}
 REPEATS = {"daily", "weekly", "monthly", "yearly"}
 EXPECTED_KEYS = {"location", "notes_contains", "end_local", "repeats_contains"}
@@ -193,17 +223,17 @@ UPDATE_FIELDS = {"new_title", "start", "end", "location", "notes"}
 # precheck_failed or unknown row either, but the set stays pending so the
 # page keeps showing it:
 # a row that did not do what it said needs a human, and the page is the only
-# place one is visible.
+# place one is visible. the user's two exits there: retry (reset) or hide
+# (accept the failed rows as final).
 SETTLED = {"success", "denied"}
 
 # ---- tool-call layer constants ----
-CALENDAR_URL = "http://127.0.0.1:8355/mcp"   # host app's macos_calendar
-HOST_TOKEN = pathlib.Path.home() / "Library/Application Support/com.example.iris.host/token"
+CALENDAR_PORT = 8355   # host app's macos_calendar
+REMINDERS_PORT = 4471   # host app's reminders
 JMAP_PYTHON = "/Users/me/.venvs/jmap_tools/bin/python"
 JMAP_SERVER = IRIS / "services/mcp/jmap_mail/jmap_mail.py"
-HERMES_ENV = pathlib.Path.home() / ".hermes/.env"
 JMAP_TOKEN_VARS = ("JMAP_TOKEN_READONLY", "JMAP_TOKEN_WRITE")
-# the iris chat account is a separate webmail account, read through its own
+# the iris chat account is a separate Webmail account, read through its own
 # child carrying only this read-only token — nothing ever writes there
 IRIS_TOKEN_VAR = "JMAP_TOKEN_READONLY_IRIS"
 # injected iris mail rides through ledger, sets and trim under this id prefix
@@ -222,16 +252,23 @@ SUGGESTION_CAP = 150   # row suggestion note bound — the page shows it verbati
 
 # the cron job whose agent run calls /api/emails/inbox-scan and posts the sets back
 CRON_JOB = "actions-inbox-scan"
-CRON_JOBS = pathlib.Path.home() / ".hermes/cron/jobs.json"
-CRON_EXECUTIONS = pathlib.Path.home() / ".hermes/cron/executions.db"
 
-# /api/emails/inbox-scan: one scan at a time, newest 50 new emails max, bodies ~4 KB
+# /api/emails/inbox-scan: one scan at a time, newest 50 new emails max,
+# snippets for ordinary mail and ~4 KB bodies for the two always-actionable
+# classes
 SCAN_LOCK = threading.Lock()
 # ids the newest scan handed to the agent — display only, feeds the page's
 # "3/12 decided" while a run is going; a restart just blanks the counter
 SCAN_BATCH = []
 NEW_CAP = 50
 BODY_CAP = 4096
+# Prose handed over per ordinary email. The whole scan must fit hermes' MCP
+# result cap (50,000 characters), and past it the agent gets a 1,500-character
+# preview plus a file path it has no tool to open — the run then loses every
+# email it was handed. 50 emails of header + snippet is ~26,000 characters, so
+# the payload cannot reach the cap; the agent widens what it needs with
+# read_email.
+SNIPPET_CAP = 400
 THREAD_AFTER_CAP = 5   # newest follow-up messages handed over per thread
 FINANCE_THREAD_CAP = 20   # full-chain bound for finance-review emails
 # body-fetch budget per scan: the clock starts before the inbox listing,
@@ -346,6 +383,7 @@ ARG_KEYS = {
     "open_email": {"email"},
     "categorize_transaction": {"transaction_id", "category", "update_rule",
                                "transaction"},
+    "create_reminder": {"name", "list", "due", "notes"},
 }
 
 _LINE_BREAK = re.compile(r"[\r\n]")
@@ -480,6 +518,24 @@ def _validate_row(r):
         if tx["transaction_id"] != args["transaction_id"]:
             raise ValueError("args.transaction does not match transaction_id")
 
+    elif kind == "create_reminder":
+        args["name"] = _req_str(args, "name").strip()
+        if _LINE_BREAK.search(args["name"]):
+            raise ValueError("name must not contain line breaks")
+        if _req_str(args, "list") not in REMINDER_LISTS:
+            raise ValueError(f"list must be one of {sorted(REMINDER_LISTS)}")
+        due = args.get("due")
+        if due and not (isinstance(due, str) and _DATE.match(due)):
+            raise ValueError("due must be a date, 'YYYY-MM-DD'")
+        if due:
+            datetime.strptime(due, "%Y-%m-%d")   # a real calendar day
+        notes = args.get("notes", "")
+        if not isinstance(notes, str):
+            raise ValueError("notes must be a string")
+        if len(notes) > REMINDER_NOTES_CAP:
+            raise ValueError(f"notes is {len(notes)} characters, the cap is "
+                             f"{REMINDER_NOTES_CAP}")
+
     # optional row-level display data: the targeted series' repeat pattern,
     # end and occurrence count. Lives outside args, so it never enters
     # args_sha256 — it describes the target, it is not part of the action.
@@ -561,24 +617,13 @@ def finalize_set(s):
 def empty_state():
     return {"version": 1, "ledger": {}, "sets": {}, "denials": [],
             "last_scan_at": None, "last_scan_status": None,
-            "last_inbox_ids": [], "last_iris_ids": None, "intents": {}}
+            "last_inbox_ids": [], "last_iris_ids": None, "intents": {},
+            "listing": {}}
 
 
 def save_state(state):
-    """tmp file + fsync + os.replace + dir fsync, mode 0600. Caller holds LOCK."""
-    tmp = STATE_FILE.with_name("state.json.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(state, f, indent=2)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, STATE_FILE)
-    dfd = os.open(common.STATE_DIR, os.O_RDONLY)
-    try:
-        os.fsync(dfd)
-    finally:
-        os.close(dfd)
+    """Caller holds LOCK."""
+    common.write_json(STATE_FILE, state)
 
 
 def load_state():
@@ -586,7 +631,9 @@ def load_state():
     boot reconciliation thread settles them against reality."""
     if not STATE_FILE.exists():
         return None
-    return json.loads(STATE_FILE.read_text())
+    state = json.loads(STATE_FILE.read_text())
+    state.setdefault("listing", {})
+    return state
 
 
 def _find_row(s, row_id):
@@ -597,18 +644,29 @@ def _has_in_progress(s):
     return any(r["status"] == "in_progress" for r in s["rows"])
 
 
+def _stuck(s):
+    """Pending with nothing left to decide or run. In practice that means a
+    failed row (run_failed, precheck_failed, unknown) is holding it — an
+    all-settled set resolves through _maybe_resolve_set before this is ever
+    asked. the user's choice on a stuck set is retry (void and re-propose) or
+    hide (accept the failed rows as final)."""
+    return (s["state"] == "pending"
+            and all(r["status"] not in ("pending", "in_progress")
+                    for r in s["rows"]))
+
+
 def _maybe_resolve_set(s):
     """A pending set resolves once every row succeeded or was denied. One that
     failed at run time, failed its pre-check or ended unknown keeps the set
-    pending and on the page
-    until it is handled by hand and reset."""
+    pending and on the page until the user retries it (reset) or hides it
+    (accepting the failed rows as final)."""
     if s["state"] == "pending" and all(r["status"] in SETTLED for r in s["rows"]):
         s["state"] = "resolved"
         s["resolved_at"] = _now()
 
 
 # ---------------------------------------------------------------- parsers
-# Both tool surfaces are asked for format="json". Every parser fails closed:
+# All three tool surfaces are asked for format="json". Every parser fails closed:
 # any violation raises ListingError, and a partial listing is never treated
 # as authoritative.
 
@@ -656,6 +714,31 @@ def parse_event_listing(text):
                     "all_day": e["all_day"], "calendar": e["calendar"],
                     "location": e["location"], "repeats": e["repeats"],
                     "notes": e["notes"].replace("\n", " / "), "id": e["id"]})
+    return out
+
+
+def parse_reminder_listing(text):
+    """[{name, list}] out of a format="json" search_reminders result.
+    Fails closed: the JSON must parse and return as many reminders as it
+    reports — a capped listing is never treated as complete."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise ListingError("search_reminders result was not JSON") from None
+    if not isinstance(data, dict):
+        raise ListingError("search_reminders result was not a JSON object")
+    reminders = data.get("reminders")
+    if (type(data.get("total")) is not int or not isinstance(reminders, list)
+            or data["total"] != len(reminders)):
+        raise ListingError(
+            f"search_reminders reported {data.get('total')!r}, returned "
+            f"{len(reminders) if isinstance(reminders, list) else 'none'}")
+    out = []
+    for r in reminders:
+        if (not isinstance(r, dict)
+                or not all(isinstance(r.get(k), str) for k in ("name", "list"))):
+            raise ListingError(f"search_reminders entry did not parse: {r!r}")
+        out.append({"name": r["name"], "list": r["list"]})
     return out
 
 
@@ -713,47 +796,37 @@ def parse_thread_listing(text):
 
 
 # ---------------------------------------------------------------- tool layer
-# Every actual MCP tool invocation lives behind these two functions, so
-# tests stub exactly them.
+# Every actual MCP tool invocation lives behind these three functions
+# (call_calendar, call_reminders, call_webmail), so tests stub exactly them.
 
 def call_calendar(tool, args):
-    """(ok, text) from one streamable-HTTP call to the host app's
-    macos_calendar server. One short-lived session per call, bearer read per
-    call; ok = no MCP error and no FAILED:/REJECTED: marker."""
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    """(ok, text) from one call to the host app's macos_calendar server."""
+    return _call_host(CALENDAR_PORT, tool, args)
 
-    async def call():
-        token = HOST_TOKEN.read_text().strip()
-        async with streamablehttp_client(CALENDAR_URL, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
-            async with ClientSession(r, w) as session:
-                await session.initialize()
-                return await session.call_tool(tool, args)
 
+def call_reminders(tool, args):
+    """(ok, text) from one call to the host app's reminders server."""
+    return _call_host(REMINDERS_PORT, tool, args)
+
+
+def _call_host(port, tool, args):
+    """(ok, text) from one call to a server the host app runs — common's
+    call_host_tool, any exception turned into a FAILED: text."""
     try:
-        result = asyncio.run(asyncio.wait_for(call(), TOOL_TIMEOUT))
+        text, ok = asyncio.run(call_host_tool.call_host_tool(port, tool, args))
     except Exception as e:
         return False, f"FAILED: {type(e).__name__}: {e}"
-    text = "\n".join(c.text for c in result.content if getattr(c, "text", None))
-    ok = not result.isError and not text.lstrip().startswith(FAILURE_MARKERS)
     return ok, text
 
 
 def _hermes_env():
-    """KEY=VALUE pairs out of ~/.hermes/.env (plain parse, whitespace and
-    surrounding quotes stripped — the same semantics as health_check's
-    _load_env, so a value that passes the health check works here too; the
-    launchd environment carries neither)."""
-    values = {}
+    """KEY=VALUE pairs out of ~/.hermes/.env (the same semantics as
+    health_check's _load_env, so a value that passes the health check works
+    here too; the launchd environment carries neither). Missing file -> {}."""
     try:
-        for line in HERMES_ENV.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                values[k.strip()] = v.strip().strip('"').strip("'")
+        return hermes_env.read()
     except OSError:
-        pass
-    return values
+        return {}
 
 
 def _iris_token():
@@ -945,7 +1018,7 @@ def _list_day(calendar, start_local):
 
 def _resolve(calendar, title, start_local):
     """Entries matching title AND calendar AND start exactly. Titles compare
-    after html.unescape, single pass, both sides: booking systems
+    after html.unescape, single pass, both sides: booking systems (the booking service)
     write titles with literal entities (&quot;) that the scan's copy carries
     decoded."""
     want = html.unescape(title)
@@ -1231,6 +1304,29 @@ def _exec_mirror(args):
     return ("success" if ok else "run_failed"), _first_line(text)
 
 
+def _exec_reminder(args):
+    ok, text = call_reminders("create_reminder", {
+        "name": args["name"], "list_name": args["list"],
+        "notes": args.get("notes", ""), "due": args.get("due", "")})
+    # the tool's SUCCESS line ends with the reminder id, an internal handle
+    # the reminders server says never to show
+    return ("success" if ok else "run_failed"), _first_line(text).rsplit(" — id:", 1)[0]
+
+
+def _reminder_exists(args):
+    """True when an open reminder of that exact name sits on that list (the
+    list compared the way the reminders server matches it: ignoring case).
+    A failed or unparseable search raises, so the caller marks the row
+    unknown."""
+    ok, text = call_reminders("search_reminders", {
+        "query": args["name"], "list_name": args["list"], "limit": 50,
+        "format": "json"})
+    if not ok:
+        raise RuntimeError(_first_line(text))
+    return any(r["name"] == args["name"] and r["list"].lower() == args["list"].lower()
+               for r in parse_reminder_listing(text))
+
+
 # a busy finance write is waited out in the executor thread: one row runs at
 # a time area-wide, so at most one thread ever waits on this
 CATEGORIZE_BUSY_WAIT_S = 150
@@ -1239,7 +1335,7 @@ CATEGORIZE_BUSY_POLL_S = 5
 
 def _exec_categorize(args):
     """One categorize write through the finance area's helper path — the
-    same write.mjs op and single-flight as the finance page's apply."""
+    same budget_helper.mjs op and single-flight as the finance page's apply."""
     deadline = time.monotonic() + CATEGORIZE_BUSY_WAIT_S
     while True:
         outcome, text = finance.categorize_one(
@@ -1275,6 +1371,8 @@ def execute_row(r):
         return _exec_mirror(args)
     if kind == "categorize_transaction":
         return _exec_categorize(args)
+    if kind == "create_reminder":
+        return _exec_reminder(args)
     if kind == "open_email":
         # the open button is a plain link on the page; done (approve) only
         # marks the row handled — there is nothing to execute
@@ -1387,6 +1485,10 @@ def reconcile_row(r):
         if states.get(args["transaction_id"]) == "handled":
             return "success", "categorized (settled at boot)"
         return "pending", "categorize never landed — re-fire"
+    if kind == "create_reminder":
+        if _reminder_exists(args):
+            return "success", "added before the crash"
+        return "pending", "reminder never landed — re-fire"
     if kind == "open_email":
         return "success", "marked done"  # a no-op has nothing left to land
     raise ValueError(f"row kind {kind!r} not allowed")
@@ -1466,44 +1568,6 @@ def _row_view(r):
     return view
 
 
-def _job_record():
-    """The actions-inbox-scan entry from hermes' own jobs file. Its last_run_at
-    answers "did the job run" rather than "did a scan finish" — a run that
-    dies before scanning still moves it. Unreadable file -> None."""
-    try:
-        jobs = json.loads(CRON_JOBS.read_text())["jobs"]
-    except (OSError, ValueError, KeyError):
-        return None
-    return next((j for j in jobs if j.get("name") == CRON_JOB), None)
-
-
-def _job_running_since(job):
-    """Start time of a run going right now: the newest attempt for the job
-    in hermes' executions ledger, while it is still claimed/running. Covers
-    scheduled runs and page-started ones alike. A run that dies uncleanly
-    keeps its running row until hermes proves the owner process gone, so a
-    dead run can read as running for a while. Any read problem -> None,
-    shown as not running."""
-    if not job or not job.get("id"):
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{CRON_EXECUTIONS}?mode=ro", uri=True,
-                               timeout=1)
-        try:
-            row = conn.execute(
-                "SELECT status, coalesce(started_at, claimed_at) "
-                "FROM executions WHERE job_id = ? "
-                "ORDER BY claimed_at DESC, id DESC LIMIT 1",
-                (job["id"],)).fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
-    if row and row[0] in ("claimed", "running"):
-        return row[1]
-    return None
-
-
 def _recently_resolved(s):
     """A resolved set stays on the page (collapsed) for 24 h. Sets resolved
     before the resolved_at stamp existed have none and never show."""
@@ -1541,7 +1605,7 @@ def page_state(state):
         sets.append({"id": s["id"], "title": s["title"], "rationale": s["rationale"],
                      "created_at": s["created_at"], "created_by": s["created_by"],
                      "state": s["state"], "resolved_at": s.get("resolved_at"),
-                     "emails": emails,
+                     "stuck": _stuck(s), "emails": emails,
                      "rows": [_row_view(r) for r in s["rows"]]})
     sets.sort(key=lambda s: s["created_at"])
     # 0 means "no provably-complete listing yet" (an empty inbox is never
@@ -1636,11 +1700,13 @@ def reset(state, body):
             if state["ledger"].get(i, {}).get("set_id") == s["id"]:
                 del state["ledger"][i]
     if scope_ids is None:
-        state["denials"] = []
-        state["ledger"] = {}
         # a full reset means a blank slate: superseded records would otherwise
         # sit here until their emails leave the inbox, piling up across runs.
-        # The decisions log keeps what actually happened.
+        # The decisions log keeps what actually happened. The scan stamps and
+        # the listing cache stay: the page reads a missing stamp as a stale
+        # scan, and a run in flight still saves its sets against the listing.
+        state["denials"] = []
+        state["ledger"] = {}
         state["sets"] = {}
     else:
         state["denials"] = [d for d in state["denials"]
@@ -1651,10 +1717,14 @@ def reset(state, body):
 
 def hide(state, body):
     """POST /api/emails/hide: {set_id} for one finished set, {all: true} for
-    every finished set on the page. The record, its ledger entries and the
-    decisions log stay as they are — the card only leaves the page before its
-    24 h window ends. A pending set still has rows to answer, so only a
-    resolved one can be hidden. Caller holds LOCK."""
+    every resolved set on the page (the done section's clear key). The ledger
+    entries and the decisions log stay as they are — the card only leaves the
+    page before its 24 h window ends. A set with rows still to answer or a row
+    running cannot be hidden; a stuck set (failed rows only left) can, by
+    set_id only (the card's accept key) — hiding it settles it as resolved,
+    accepting the failed rows as final, so the trim can clear the record like
+    any resolved set. all: true never touches a stuck set: it still needs
+    the user's choice. Caller holds LOCK."""
     if body.get("all") is True:
         matched = [s for s in state["sets"].values()
                    if _recently_resolved(s) and not s.get("hidden")]
@@ -1662,12 +1732,15 @@ def hide(state, body):
         s = state["sets"].get(body["set_id"])
         if s is None:
             return 404, {"error": "unknown set"}
-        if s["state"] != "resolved":
+        if s["state"] != "resolved" and not _stuck(s):
             return 409, {"error": f"set is {s['state']}"}
         matched = [s] if not s.get("hidden") else []
     else:
         return 400, {"error": "pass set_id or all: true"}
     for s in matched:
+        if s["state"] == "pending":  # stuck — settle it, failed rows stand
+            s["state"] = "resolved"
+            s["resolved_at"] = _now()
         s["hidden"] = True
         _log({"event": "set_hidden", "set_id": s["id"],
               "email_ids": s["email_ids"]})
@@ -1690,23 +1763,38 @@ def _register_id(email_id, subject, iris):
     return any(e["id"] == email_id for e in parse_inbox_listing(text)[1])
 
 
+def _known_subject(email_id):
+    """The email's subject, or None when the service has never seen the id.
+    Two places carry one: the scan listing while the mail is in the inbox, and
+    any set that holds it — an archived member is in no listing, and the page
+    still expands its row. The subject is what _register_id searches on."""
+    known = STATE["listing"].get(email_id)
+    if known:
+        return known["subject"]
+    for s in STATE["sets"].values():
+        for e in s["emails"]:
+            if e["id"] == email_id:
+                return e["subject"]
+    return None
+
+
 def read_body(params):
-    """GET /api/emails/body?set_id=…&email_id=…: one member email's own text
-    — the header block and the body, as get_email renders them — for the
-    page's expanded email row. Sets store the snapshot facts, never the body,
-    so the text is fetched when a row asks for it. A failed fetch is a 502
-    with the tool's first line; the page shows that in the row."""
+    """GET /api/emails/body?email_id=…: one email's own text — the header block
+    and the body, as get_email renders them, uncut. Two callers: the page's
+    expanded email row, and the agent's read_email tool widening a scan
+    snippet. Neither sets nor the scan store bodies, so the text is fetched
+    live. A failed fetch is a 502 with the tool's first line; the page shows
+    that in the row."""
+    email_id = params.get("email_id") or ""
     with LOCK:
-        s = STATE["sets"].get(params.get("set_id") or "")
-        m = next((dict(e) for e in s["emails"]
-                  if e["id"] == params.get("email_id")), None) if s else None
-    if m is None:
+        subject = _known_subject(email_id)
+    if subject is None:
         return 404, {"error": "unknown email"}
-    iris = m["id"].startswith(IRIS_PREFIX)
-    raw = m["id"][len(IRIS_PREFIX):] if iris else m["id"]
+    iris = email_id.startswith(IRIS_PREFIX)
+    raw = email_id[len(IRIS_PREFIX):] if iris else email_id
     try:
         ok, text = _fetch_body(raw, iris=iris)
-        if not ok and _register_id(raw, m["subject"], iris):
+        if not ok and _register_id(raw, subject, iris):
             ok, text = _fetch_body(raw, iris=iris)
         if not ok:
             return 502, {"error": _first_line(text)}
@@ -1800,6 +1888,7 @@ def _trim(state, inbox_ids):
     is provably complete."""
     inbox = set(inbox_ids)
     state["ledger"] = {i: v for i, v in state["ledger"].items() if i in inbox}
+    state["listing"] = {i: v for i, v in state["listing"].items() if i in inbox}
     pending_members = {tuple(sorted(s["email_ids"])) for s in state["sets"].values()
                        if s["state"] == "pending"}
     # a denial lives while any of its set's emails is still in the inbox;
@@ -1861,6 +1950,30 @@ def _cap_body(text, cap=BODY_CAP):
     return "\n".join(out) + f"\n[body capped ~{cap // 1024} KB — date/time/link lines first]"
 
 
+def _snippet(text, cap=SNIPPET_CAP):
+    """The opening of the body, in reading order. _cap_body is the wrong cut
+    here: it hoists date and link lines to the front, which reads well at 4 KB
+    and not at all at 400 characters. The agent judges from this whether the
+    mail is worth a read_email call, so the first sentences are what matter."""
+    text = (text or "").strip()
+    if len(text) <= cap:
+        return text
+    return (text[:cap].rstrip()
+            + "\n[snippet — call read_email for this email's full text]")
+
+
+# the section header get_email writes above its link list, fixed-format so the
+# snippet cut lands on prose and never inside a URL
+LINKS_HEADER = "Links in the HTML version (anchor text -> URL):"
+
+
+def _split_links(body):
+    """(main, links_section) — get_email appends the links after the body text
+    and before the ICS section."""
+    main, _, links = body.partition(LINKS_HEADER)
+    return main.rstrip(), (LINKS_HEADER + links.rstrip()) if links else ""
+
+
 # the section header and the "- METHOD uid=… sequence=… stamped=…" event line
 # the webmail tool's _fmt_ics_event writes — fixed-format so the scan can
 # split the section off the body and build the per-uid timeline
@@ -1920,18 +2033,18 @@ def _fetch_body(email_id, iris=False):
         return call("get_email", {"email_id": email_id}, timeout=20)
 
 
-def _merge_newest(hi, iris):
+def _merge_newest(hello, iris):
     """Two newest-first lists merged into one; each side keeps its own order
     on ties, so an empty iris side is the identity."""
     out, i, j = [], 0, 0
-    while i < len(hi) and j < len(iris):
-        if iris[j]["receivedAt"] > hi[i]["receivedAt"]:
+    while i < len(hello) and j < len(iris):
+        if iris[j]["receivedAt"] > hello[i]["receivedAt"]:
             out.append(iris[j])
             j += 1
         else:
-            out.append(hi[i])
+            out.append(hello[i])
             i += 1
-    return out + hi[i:] + iris[j:]
+    return out + hello[i:] + iris[j:]
 
 
 def scan(state):
@@ -1972,6 +2085,18 @@ def _scan(state):
     complete = total == len(inbox_ids) and total > 0
     iris_tagged = [IRIS_PREFIX + e["id"] for e in iris_entries]
     with LOCK:
+        # the listing cache save_set stamps member facts from: every id this
+        # scan listed, facts as the mailbox reported them. Merged, never
+        # replaced — an incomplete listing must not drop known ids; the trim
+        # prunes ids once a listing is provably complete.
+        for e in entries:
+            state["listing"][e["id"]] = {"subject": e["subject"],
+                                         "from": e["from"],
+                                         "receivedAt": e["receivedAt"]}
+        for e in iris_entries:
+            state["listing"][IRIS_PREFIX + e["id"]] = {
+                "subject": e["subject"], "from": e["from"],
+                "receivedAt": e["receivedAt"]}
         if complete and (not IRIS_ENABLED or iris_complete):
             _trim(state, inbox_ids + iris_tagged)
             state["last_inbox_ids"] = inbox_ids
@@ -2071,19 +2196,31 @@ def _scan(state):
         if not iris and _to_ignored(header):
             continue
         main, ics = _split_ics(raw)
-        body = _cap_body(main) + ("\n\n" + ics if ics else "")
+        prose, links = _split_links(main)
+        # a sender who is an open ask's recipient makes this a finance-review
+        # email: the entry carries the ask id and the whole thread is attached
+        # below, so the agent's only job is pairing the answers to the ask's
+        # items
+        ask_id = None if iris else finance.open_ask_for_sender(e["from"])
+        # Two classes are read in full, because the agent is required to act on
+        # their content and both are rare: injected mail, where the body IS
+        # the user's instruction, and a finance-review reply, whose numbered
+        # answers have to pair against the ask. An invitation keeps its link
+        # list too — the meeting link is part of the event the agent proposes.
+        # Everything else gets a snippet; read_email widens it on demand.
+        if iris or ask_id:
+            parts = [_cap_body(prose), links, ics]
+        elif ics:
+            parts = [_snippet(prose), links, ics]
+        else:
+            parts = [_snippet(prose)]
         entry = {"id": e["id"], "from": e["from"], "subject": e["subject"],
-                 "receivedAt": e["receivedAt"], "body": body}
+                 "receivedAt": e["receivedAt"],
+                 "body": "\n\n".join(p for p in parts if p)}
         if iris:
             entry["actions_category"] = e["actions_category"]
-        else:
-            # a sender who is an open ask's recipient makes this a
-            # finance-review email: the entry carries the ask id and the
-            # whole thread is attached below, so the agent's only job is
-            # pairing the answers to the ask's items
-            ask_id = finance.open_ask_for_sender(e["from"])
-            if ask_id:
-                entry["finance_review"] = ask_id
+        elif ask_id:
+            entry["finance_review"] = ask_id
         out_emails.append(entry)
     # thread phase: has anyone followed up on these emails? Follow-up
     # messages (the user's replies included — they live in Sent, never the
@@ -2095,8 +2232,12 @@ def _scan(state):
     def _out_of_time():
         return time.monotonic() - started > BODY_BUDGET_S - 75
 
-    def _thread_after(email_id, received_at, cap=THREAD_AFTER_CAP):
-        """(messages newer than received_at with capped bodies, error)."""
+    def _thread_after(email_id, received_at, cap=THREAD_AFTER_CAP, full=False):
+        """(messages newer than received_at, error). Bodies come back as
+        snippets — the agent reads a follow-up in full with read_email, and
+        five 4 KB follow-ups per new email is how a scan reaches the MCP result
+        cap. full=True is the finance-review chain, whose numbered questions
+        and answers have to be paired verbatim."""
         if email_id not in thread_cache:
             if _out_of_time():
                 return None, "not checked — scan ran out of time"
@@ -2130,7 +2271,8 @@ def _scan(state):
                 # "" means the body fetch failed — the message exists, its
                 # content is unknown
                 body_cache[t["id"]] = _cap_body(_email_parts(text)[1]) if ok else ""
-            out.append({**t, "body": body_cache[t["id"]]})
+            body = body_cache[t["id"]]
+            out.append({**t, "body": body if full else _snippet(body)})
         return out, None
 
     def _attach(target, email_id, received_at):
@@ -2150,7 +2292,8 @@ def _scan(state):
         if e.get("finance_review"):
             # the full chain, the ask mail's questions included — the cap
             # only bounds a runaway thread, it must not cut the bottom off
-            after, err = _thread_after(e["id"], "", cap=FINANCE_THREAD_CAP)
+            after, err = _thread_after(e["id"], "", cap=FINANCE_THREAD_CAP,
+                                       full=True)
             if after:
                 e["thread"] = after
             elif err:
@@ -2200,16 +2343,23 @@ def save_set(state, body):
     kind = body.get("kind", "action")
     if kind not in ("action", "ignore"):
         return 400, {"error": "kind must be action or ignore"}
-    emails = body.get("emails")
-    if (not isinstance(emails, list) or not emails or not all(
-            isinstance(m, dict) and all(isinstance(m.get(k), str) and m[k]
-                                        for k in ("id", "subject", "from", "receivedAt"))
-            for m in emails)):
-        return 400, {"error": "emails must be a non-empty list of "
-                              "{id, subject, from, receivedAt} dicts"}
-    email_ids = [m["id"] for m in emails]
+    email_ids = body.get("emails")
+    if (not isinstance(email_ids, list) or not email_ids or not all(
+            isinstance(i, str) and i for i in email_ids)):
+        return 400, {"error": "emails must be a non-empty list of email id "
+                              "strings — the service stamps subject, from and "
+                              "receivedAt from its own inbox listing"}
     if len(set(email_ids)) != len(email_ids):
         return 400, {"error": "emails carry the same id twice"}
+    # display facts come from the scan's listing cache, never from the
+    # caller: a mistyped subject once broke an archive precheck for good
+    # (same deal as args.transaction from the ask store)
+    unknown = [i for i in email_ids if i not in state["listing"]]
+    if unknown:
+        return 400, {"error": f"unknown email id {unknown[0]!r} — not in the "
+                              "scanned inbox listing; use ids exactly as scan "
+                              "returned them"}
+    emails = [{"id": i, **state["listing"][i]} for i in email_ids]
     now = _now()
 
     if kind == "ignore":
@@ -2263,6 +2413,32 @@ def save_set(state, body):
         if br.get("suggestion") is not None:
             b["suggestion"] = br["suggestion"]
         built.append(b)
+    # email-referencing rows carry member ids only; the service stamps the
+    # full display facts from the members resolved above
+    by_id = {m["id"]: m for m in emails}
+    for b in built:
+        if b["kind"] == "archive_email" and isinstance(b.get("args"), dict):
+            ids = b["args"].get("emails")
+            if not (isinstance(ids, list)
+                    and all(isinstance(i, str) and i for i in ids)):
+                return 400, {"error": "archive_email args.emails must be a list "
+                                      "of member email id strings — the service "
+                                      "stamps the display facts"}
+            outside = [i for i in ids if i not in by_id]
+            if outside:
+                return 400, {"error": f"archive_email covers {outside[0]!r}, "
+                                      "not a member of this set"}
+            b["args"] = dict(b["args"], emails=[dict(by_id[i]) for i in ids])
+        elif b["kind"] == "open_email" and isinstance(b.get("args"), dict):
+            i = b["args"].get("email")
+            if not (isinstance(i, str) and i):
+                return 400, {"error": "open_email args.email must be one member "
+                                      "email id string — the service stamps the "
+                                      "display facts"}
+            if i not in by_id:
+                return 400, {"error": f"open_email points at {i!r}, not a "
+                                      "member of this set"}
+            b["args"] = dict(b["args"], email=dict(by_id[i]))
     ask_id = body.get("ask_id")
     has_cat = any(b["kind"] == "categorize_transaction" for b in built)
     if has_cat and not (isinstance(ask_id, str) and ask_id):
@@ -2387,10 +2563,10 @@ def state():
     so a poll never queues resolves or scan sections behind its I/O."""
     with LOCK:
         out = page_state(STATE)
-    job = _job_record()
+    job = common.cron_job(CRON_JOB)
     out["job_last_run_at"] = job.get("last_run_at") if job else None
     out["job_next_run_at"] = job.get("next_run_at") if job else None
-    out["job_running_since"] = _job_running_since(job)
+    out["job_running_since"] = common.job_running_since(job)
     if _CALENDAR_COLORS:
         out["calendar_colors"] = _CALENDAR_COLORS
     return out

@@ -16,9 +16,17 @@ Endpoints (HANDLERS; guards and dispatch live in server.py):
 
 - POST /api/system/restart-gateway  restart ai.hermes.gateway
 - POST /api/system/restart-webui     restart com.example.iris.webui
+- POST /api/system/doctor-fix        run `hermes doctor --fix`
 
-Each answers 200 once launchctl exits 0, and 502 with launchctl's own text
-otherwise (an unknown label, a domain that is not loaded).
+Each restart answers 200 once launchctl exits 0, and 502 with launchctl's own
+text otherwise (an unknown label, a domain that is not loaded).
+
+doctor-fix is the audit's doctor-warning key: `hermes doctor --fix` repairs
+what doctor knows how to (the macOS TCC anchor on the venv python, the CA
+bundle, the ~/.local/bin/hermes link) and leaves the rest as warnings. One
+run covers both profiles: the repairs live in the shared install, not in a
+profile home. It answers 200 with the count doctor reports as fixed, and 502
+with doctor's own text when it exits non-zero.
 
 state() reports when each agent's current process started, which is how the
 page says whether a restart landed: `launchctl list <label>` gives the pid
@@ -37,6 +45,7 @@ from common import _log
 
 LAUNCHCTL = "/bin/launchctl"
 PS = "/bin/ps"
+HERMES = "hermes"
 
 LABELS = {"gateway": "ai.hermes.gateway",
           "webui": "com.example.iris.webui"}
@@ -44,6 +53,9 @@ LABELS = {"gateway": "ai.hermes.gateway",
 # kickstart returns as soon as launchd holds the new process; the timeout is
 # only there so a wedged launchd cannot hold the request open
 TIMEOUT = 30
+# doctor probes every provider and tool server on the way; the audit gives it
+# the same budget
+DOCTOR_TIMEOUT = 120
 
 
 def restart(name):
@@ -61,6 +73,23 @@ def restart(name):
                               f"{p.returncode}: {text}"}
     _log({"event": "system_restart", "result": label})
     return 200, {"restarted": label}
+
+
+def doctor_fix():
+    """Run `hermes doctor --fix` once, for the shared install."""
+    try:
+        p = subprocess.run([HERMES, "doctor", "--fix"], capture_output=True,
+                           text=True, timeout=DOCTOR_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 502, {"error": f"hermes doctor: {e}"}
+    if p.returncode != 0:
+        text = (p.stderr or p.stdout).strip()[-200:]
+        return 502, {"error": f"hermes doctor --fix exited {p.returncode}: "
+                              f"{text}"}
+    m = re.search(r"Fixed (\d+) issue", p.stdout)
+    fixed = int(m.group(1)) if m else 0
+    _log({"event": "doctor_fix", "result": f"fixed {fixed}"})
+    return 200, {"fixed": fixed}
 
 
 def _started_at(label):
@@ -107,5 +136,10 @@ def _h_webui(body):
     return restart("webui")
 
 
+def _h_doctor_fix(body):
+    return doctor_fix()
+
+
 HANDLERS = {"/api/system/restart-gateway": _h_gateway,
-            "/api/system/restart-webui": _h_webui}
+            "/api/system/restart-webui": _h_webui,
+            "/api/system/doctor-fix": _h_doctor_fix}

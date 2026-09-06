@@ -105,6 +105,37 @@ class SystemTest(unittest.TestCase):
         system.restart("gateway")
         self.assertEqual(list(common.STATE_DIR.glob("decisions-*.jsonl")), [])
 
+    # ---- doctor --fix ----
+
+    def test_doctor_fix_runs_doctor_and_reports_the_fixed_count(self):
+        self.patch_run(stdout="  ✓ macOS TCC anchor installed\n"
+                              "  Fixed 1 issue(s). 2 issue(s) require manual "
+                              "intervention.\n")
+        code, body = system.doctor_fix()
+        self.assertEqual((code, body), (200, {"fixed": 1}))
+        self.assertEqual(self.calls, [["hermes", "doctor", "--fix"]])
+        line = next(common.STATE_DIR.glob("decisions-*.jsonl")).read_text()
+        self.assertIn("doctor_fix", line)
+        self.assertIn("fixed 1", line)
+
+    def test_doctor_fix_with_nothing_to_fix_reports_zero(self):
+        self.patch_run(stdout="  ✓ all good\n")
+        self.assertEqual(system.doctor_fix(), (200, {"fixed": 0}))
+
+    def test_doctor_fix_crash_gives_502_with_doctors_text(self):
+        self.patch_run(returncode=1, stderr="Traceback: boom\n")
+        code, body = system.doctor_fix()
+        self.assertEqual(code, 502)
+        self.assertIn("exited 1", body["error"])
+        self.assertIn("boom", body["error"])
+        self.assertEqual(list(common.STATE_DIR.glob("decisions-*.jsonl")), [])
+
+    def test_doctor_fix_timeout_gives_502(self):
+        self.patch_run(raises=subprocess.TimeoutExpired("hermes", 120))
+        code, body = system.doctor_fix()
+        self.assertEqual(code, 502)
+        self.assertIn("hermes doctor", body["error"])
+
     # ---- how long the process has been up ----
 
     def test_started_at_reads_the_pid_then_its_start_time(self):
@@ -147,6 +178,11 @@ class SystemTest(unittest.TestCase):
                              "com.example.iris.webui")):
             code, body = system.HANDLERS[path]({})
             self.assertEqual((code, body), (200, {"restarted": label}))
+
+    def test_doctor_fix_handler(self):
+        self.patch_run(stdout="  Fixed 2 issue(s).\n")
+        self.assertEqual(system.HANDLERS["/api/system/doctor-fix"]({}),
+                         (200, {"fixed": 2}))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,8 @@
 """Tests for services/actions/finance.py — stdlib unittest, no live data.
 
 Every test runs against a temp STATE_DIR, a fake api-cache SQLite built in
-the temp directory, and patched _spawn / _run_write / subprocess — nothing
+the temp directory, and patched _spawn / api_cache.run_budget_helper /
+subprocess — nothing
 here reads or writes the real budget, state, or hermes jobs. Run:
 python3 -m pytest test_finance.py -q (from this directory), or
 python3 services/actions/test_finance.py from the repo root.
@@ -15,7 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import common
@@ -37,7 +38,14 @@ def make_budget(api_cache, categories=(), transactions=()):
         "CREATE TABLE categories (id TEXT, name TEXT, cat_group TEXT, "
         "tombstone INT DEFAULT 0, hidden INT DEFAULT 0);"
         "CREATE TABLE v_transactions (id TEXT, category TEXT, "
-        "transfer_id TEXT);")
+        "transfer_id TEXT, date INT, amount INT, payee TEXT, "
+        "is_parent INT DEFAULT 0, starting_balance_flag INT DEFAULT 0, "
+        "account TEXT DEFAULT 'a1');"
+        "CREATE TABLE accounts (id TEXT, name TEXT, offbudget INT DEFAULT 0, "
+        "tombstone INT DEFAULT 0, closed INT DEFAULT 0, "
+        "sort_order REAL DEFAULT 0);"
+        "CREATE TABLE v_payees (id TEXT, name TEXT);")
+    conn.execute("INSERT INTO accounts (id, name) VALUES ('a1', 'Checking')")
     groups = {}
     for cid, name, grp in categories:
         if grp not in groups:
@@ -48,8 +56,8 @@ def make_budget(api_cache, categories=(), transactions=()):
         conn.execute("INSERT INTO categories (id, name, cat_group) "
                      "VALUES (?, ?, ?)", (cid, name, groups[grp]))
     for tid, cat, transfer in transactions:
-        conn.execute("INSERT INTO v_transactions VALUES (?, ?, ?)",
-                     (tid, cat, transfer))
+        conn.execute("INSERT INTO v_transactions (id, category, transfer_id) "
+                     "VALUES (?, ?, ?)", (tid, cat, transfer))
     conn.commit()
     conn.close()
 
@@ -63,9 +71,18 @@ def card(tid="t1", **over):
 
 
 def full_batch():
-    """Every slot of both picks taken."""
-    return [card(f"l{i}") for i in range(finance.LATEST_CAP)] \
-        + [card(f"r{i}", pick="random") for i in range(finance.RANDOM_CAP)]
+    """Every scan slot taken."""
+    return [card(f"l{i}") for i in range(finance.LATEST_CAP)]
+
+
+class _FakeProc:
+    """A stand-in for subprocess.run's CompletedProcess — just the
+    attributes run_budget_helper reads."""
+
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 class FinanceTest(unittest.TestCase):
@@ -75,27 +92,32 @@ class FinanceTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         tmp = pathlib.Path(self._tmp.name)
         self._saved = (common.STATE_DIR, finance.STATE_FILE, finance.API_CACHE,
-                       finance.CRON_JOBS, finance.CRON_EXECUTIONS,
-                       finance.STATE, finance._spawn,
-                       finance.ASK_FILE, finance.ASKS)
+                       common.CRON_JOBS, common.CRON_EXECUTIONS,
+                       finance.STATE, finance._spawn, finance.ODD_FILE,
+                       finance.ODD_SEEN_FILE, finance.ODD, finance.ODD_SEEN,
+                       finance._ODD_ROWS)
         common.STATE_DIR = tmp
         finance.STATE_FILE = tmp / "finance.json"
-        finance.ASK_FILE = tmp / "finance-ask.json"
-        finance.ASKS = finance.empty_asks()
+        finance.ODD_FILE = tmp / "finance-oddities.json"
+        finance.ODD_SEEN_FILE = tmp / "finance-oddities-seen.json"
+        finance.ODD = finance.empty_odd()
+        finance.ODD_SEEN = {}
+        finance._ODD_ROWS = {}
         finance.API_CACHE = tmp / "api-cache"
-        finance.CRON_JOBS = tmp / "jobs.json"
-        finance.CRON_EXECUTIONS = tmp / "executions.db"
+        common.CRON_JOBS = tmp / "jobs.json"
+        common.CRON_EXECUTIONS = tmp / "executions.db"
         finance.STATE = finance.empty_state()
-        finance._PAGE_SEEN = 0.0   # module state: a state() call leaks it on
+        finance._PAGE_SEEN = 0.0   # module state: a page_seen() call leaks it on
         finance._SCAN_REQUESTED = 0.0
         self.spawned = []
         finance._spawn = lambda *a: self.spawned.append(a)
 
     def tearDown(self):
         (common.STATE_DIR, finance.STATE_FILE, finance.API_CACHE,
-         finance.CRON_JOBS, finance.CRON_EXECUTIONS,
-         finance.STATE, finance._spawn,
-         finance.ASK_FILE, finance.ASKS) = self._saved
+         common.CRON_JOBS, common.CRON_EXECUTIONS,
+         finance.STATE, finance._spawn, finance.ODD_FILE,
+         finance.ODD_SEEN_FILE, finance.ODD, finance.ODD_SEEN,
+         finance._ODD_ROWS) = self._saved
         self._tmp.cleanup()
 
     def budget(self, categories=(), transactions=()):
@@ -123,15 +145,6 @@ class TestSaveBatch(FinanceTest):
         self.assertEqual([c["transaction_id"] for c in self.saved_cards()],
                          ["old", "new"])
 
-    def test_scheduled_save_tops_up_each_pick_on_its_own(self):
-        # every latest slot taken, every random slot free
-        finance._h_batch(
-            {"cards": [card(f"l{i}") for i in range(finance.LATEST_CAP)]})
-        code, out = finance._h_batch(
-            {"cards": [card("l-new"), card("r-new", pick="random")]})
-        self.assertEqual((code, out["count"]), (200, 1))
-        self.assertEqual(self.saved_cards()[-1]["transaction_id"], "r-new")
-
     def test_scheduled_save_keeps_pending_drops_finished(self):
         finance._h_batch({"cards": [card("t1"), card("t2")]})
         finance.STATE["batch"]["cards"][1]["status"] = "done"
@@ -155,6 +168,16 @@ class TestSaveBatch(FinanceTest):
         self.assertEqual(json.loads(finance.STATE_FILE.read_text())["batch"],
                          before)
 
+    def test_scheduled_save_with_no_open_slots_short_circuits(self):
+        # keep == current: the short-circuit must return without ever
+        # rewriting state["batch"] (a fresh dict, even with equal content,
+        # would mean the "nothing changed" branch was skipped)
+        finance._h_batch({"cards": full_batch()})
+        batch_before = finance.STATE["batch"]
+        code, out = finance._h_batch({"cards": [card("new")]})
+        self.assertEqual((code, out), (200, {"ok": True, "count": 0}))
+        self.assertIs(finance.STATE["batch"], batch_before)
+
     def test_error_record_replaces_cards(self):
         finance._h_batch({"cards": [card()]})
         code, _ = finance._h_batch({"error": {"step": "llm", "message": "boom"}})
@@ -172,7 +195,7 @@ class TestSaveBatch(FinanceTest):
 
     def test_cards_must_be_list_capped(self):
         self.assertEqual(finance._h_batch({"cards": "no"})[0], 400)
-        too_many = [card(f"t{i}") for i in range(finance.BATCH_CAP + 1)]
+        too_many = [card(f"t{i}") for i in range(finance.LATEST_CAP + 1)]
         self.assertEqual(finance._h_batch({"cards": too_many})[0], 400)
 
     def test_unknown_card_keys_rejected(self):
@@ -189,13 +212,9 @@ class TestSaveBatch(FinanceTest):
             self.assertEqual(code, 400, field)
 
     def test_pick_validated(self):
-        for bad in ("newest", "", 5, None):
+        for bad in ("newest", "random", "email", "", 5, None):
             code, _ = finance._h_batch({"cards": [card(pick=bad)]})
             self.assertEqual(code, 400, bad)
-
-    def test_one_pick_over_its_cap_rejected(self):
-        over = [card(f"l{i}") for i in range(finance.LATEST_CAP + 1)]
-        self.assertEqual(finance._h_batch({"cards": over})[0], 400)
 
     def test_suggestions_validated(self):
         four = [{"category": f"c{i}", "basis": "guess"} for i in range(4)]
@@ -234,6 +253,15 @@ class TestSaveBatch(FinanceTest):
         self.assertIn("page is open", out["error"])
         self.assertEqual([c["transaction_id"] for c in self.saved_cards()], ["old"])
 
+    def test_scheduled_save_lands_past_an_open_page_when_nothing_pending(self):
+        finance._h_batch({"cards": [card("old")]})
+        finance.STATE["batch"]["cards"][0]["status"] = "done"
+        finance._PAGE_SEEN = time.time()
+        code, out = finance._h_batch({"cards": [card("new")]})
+        self.assertEqual((code, out["count"]), (200, 1))
+        self.assertEqual([c["transaction_id"] for c in self.saved_cards()],
+                         ["new"])
+
     def test_scheduled_save_lands_once_the_page_is_quiet(self):
         finance._h_batch({"cards": [card("old")]})
         finance._PAGE_SEEN = time.time() - finance.PAGE_ACTIVE_SECONDS - 1
@@ -251,10 +279,100 @@ class TestSaveBatch(FinanceTest):
         self.assertEqual([c["transaction_id"] for c in self.saved_cards()],
                          ["new"])
 
-    def test_state_poll_stamps_the_page(self):
+    def test_page_seen_stamps_the_page(self):
+        finance.page_seen()
+        self.assertGreater(finance._PAGE_SEEN, 0.0)
+
+    def test_state_poll_does_not_stamp_the_page(self):
         self.budget()
         finance.state()
-        self.assertGreater(finance._PAGE_SEEN, 0.0)
+        self.assertEqual(finance._PAGE_SEEN, 0.0)
+
+
+# ---------------------------------------------------------------- scan-check
+
+def cand(tid, pick="latest"):
+    return {"transaction_id": tid, "pick": pick}
+
+
+class TestScanCheck(FinanceTest):
+    """The scan's pre-LLM question: would a scheduled save land anything?"""
+
+    def test_open_slots_and_new_candidate_proceed(self):
+        code, out = finance._h_scan_check({"candidates": [cand("t1")]})
+        self.assertEqual((code, out["proceed"]), (200, True))
+
+    def test_full_slots_skip(self):
+        finance._h_batch({"cards": full_batch()})
+        code, out = finance._h_scan_check({"candidates": [cand("new")]})
+        self.assertEqual((code, out["proceed"]), (200, False))
+
+    def test_all_candidates_already_listed_skip(self):
+        finance._h_batch({"cards": [card("t1")]})
+        code, out = finance._h_scan_check({"candidates": [cand("t1")]})
+        self.assertEqual((code, out["proceed"]), (200, False))
+
+    def test_no_candidates_skip(self):
+        code, out = finance._h_scan_check({"candidates": []})
+        self.assertEqual((code, out["proceed"]), (200, False))
+
+    def test_rebuild_window_always_proceeds(self):
+        finance._h_batch({"cards": full_batch()})
+        finance._SCAN_REQUESTED = time.time()
+        code, out = finance._h_scan_check({"candidates": []})
+        self.assertEqual((code, out["proceed"]), (200, True))
+
+    def test_open_page_with_pending_cards_skips(self):
+        finance._h_batch({"cards": [card("t1")]})
+        finance._PAGE_SEEN = time.time()
+        code, out = finance._h_scan_check({"candidates": [cand("t2")]})
+        self.assertEqual((code, out["proceed"]), (200, False))
+
+    def test_open_page_without_pending_cards_proceeds(self):
+        finance._PAGE_SEEN = time.time()
+        code, out = finance._h_scan_check({"candidates": [cand("t1")]})
+        self.assertEqual((code, out["proceed"]), (200, True))
+
+    def test_finished_cards_free_their_slots(self):
+        finance._h_batch({"cards": full_batch()})
+        finance.STATE["batch"]["cards"][0]["status"] = "done"
+        _, out = finance._h_scan_check({"candidates": [cand("new")]})
+        self.assertTrue(out["proceed"])
+
+    def test_executing_card_skips(self):
+        finance._h_batch({"cards": [card("t1")]})
+        finance.STATE["batch"]["cards"][0]["status"] = "in_progress"
+        code, out = finance._h_scan_check({"candidates": [cand("t2")]})
+        self.assertEqual((code, out["proceed"]), (200, False))
+
+    def test_executing_card_skips_even_in_rebuild_window(self):
+        finance._h_batch({"cards": [card("t1")]})
+        finance.STATE["batch"]["cards"][0]["status"] = "in_progress"
+        finance._SCAN_REQUESTED = time.time()
+        _, out = finance._h_scan_check({"candidates": []})
+        self.assertFalse(out["proceed"])
+
+    def test_nothing_new_skip_drops_finished_cards(self):
+        finance._h_batch({"cards": [card("t1"), card("t2")]})
+        finance.STATE["batch"]["cards"][0]["status"] = "done"
+        _, out = finance._h_scan_check({"candidates": [cand("t2")]})
+        self.assertFalse(out["proceed"])
+        self.assertEqual([c["transaction_id"]
+                          for c in finance.STATE["batch"]["cards"]], ["t2"])
+
+    def test_bad_payloads_refused(self):
+        for bad in (None, "x", [{"pick": "latest"}],
+                    [{"transaction_id": "", "pick": "latest"}],
+                    [{"transaction_id": "t", "pick": "email"}],
+                    [{"transaction_id": "t", "pick": "random"}]):
+            code, _ = finance._h_scan_check({"candidates": bad})
+            self.assertEqual(code, 400, bad)
+
+    def test_check_writes_nothing(self):
+        finance._h_batch({"cards": [card("t1")]})
+        before = finance.STATE_FILE.read_text()
+        finance._h_scan_check({"candidates": [cand("t2")]})
+        self.assertEqual(finance.STATE_FILE.read_text(), before)
 
 
 # ---------------------------------------------------------------- apply
@@ -273,7 +391,7 @@ class TestApply(FinanceTest):
 
     def test_items_must_be_list_capped(self):
         for items in (None, "no", [], [self.item(f"t{i}")
-                                       for i in range(finance.BATCH_CAP
+                                       for i in range(finance.LATEST_CAP
                                                       + finance.EMAIL_CAP + 1)]):
             code, _ = finance._h_apply({"items": items})
             self.assertEqual(code, 400, items)
@@ -366,19 +484,52 @@ class TestApply(FinanceTest):
         self.assertIn("category lookup failed", out["error"])
 
 
+# ---------------------------------------------------------------- write helper
+
+class TestRunWrite(FinanceTest):
+    """api_cache.run_budget_helper itself, unpatched — _config and
+    subprocess.run stubbed so no real node process runs."""
+
+    def setUp(self):
+        super().setUp()
+        self._saved_config = finance.api_cache._config
+        self._saved_subrun = finance.api_cache.subprocess.run
+        finance.api_cache._config = lambda: {"ACTUAL_PASSWORD": "p", "ACTUAL_SYNC_ID": "s"}
+
+    def tearDown(self):
+        finance.api_cache._config = self._saved_config
+        finance.api_cache.subprocess.run = self._saved_subrun
+        super().tearDown()
+
+    def run_with(self, returncode, stdout="", stderr=""):
+        finance.api_cache.subprocess.run = lambda *a, **k: _FakeProc(returncode, stdout, stderr)
+        return finance.api_cache.run_budget_helper({"cmd": "update", "ops": []})
+
+    def test_nonzero_returncode_raises_with_stderr_detail(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_with(1, stdout="", stderr="boom")
+        self.assertIn("write helper failed", str(ctx.exception))
+        self.assertIn("boom", str(ctx.exception))
+
+    def test_nonzero_returncode_falls_back_to_stdout_when_stderr_empty(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_with(1, stdout="stdout detail", stderr="")
+        self.assertIn("stdout detail", str(ctx.exception))
+
+
 # ---------------------------------------------------------------- executor
 
 class TestWorkItems(FinanceTest):
-    """_work_items with _run_write patched — the four outcome shapes."""
+    """_work_items with run_budget_helper patched — the four outcome shapes."""
 
     def setUp(self):
         super().setUp()
         finance._h_batch({"cards": [card("t1")]})
         finance.STATE["batch"]["cards"][0]["status"] = "in_progress"
-        self._saved_run = finance._run_write
+        self._saved_run = finance.api_cache.run_budget_helper
 
     def tearDown(self):
-        finance._run_write = self._saved_run
+        finance.api_cache.run_budget_helper = self._saved_run
         super().tearDown()
 
     def run_with(self, result=None, error=None, update_rule=True, approx=False):
@@ -387,7 +538,7 @@ class TestWorkItems(FinanceTest):
             if error:
                 raise error
             return result
-        finance._run_write = fake
+        finance.api_cache.run_budget_helper = fake
         finance._work_items([("t1", "c1", "Groceries", update_rule, approx)])
         return json.loads(finance.STATE_FILE.read_text())["batch"]["cards"][0]
 
@@ -445,6 +596,20 @@ class TestWorkItems(FinanceTest):
         self.assertEqual(c["status"], "failed")
         self.assertEqual(c["status_text"], "no such id")
 
+    def test_logged_outcome_carries_non_done_status(self):
+        self.run_with({"results": [{"ok": False, "error": "no such id"}],
+                       "pushed": False})
+        log = common.STATE_DIR / f"decisions-{common._now()[:4]}.jsonl"
+        event = json.loads(log.read_text().splitlines()[-1])
+        self.assertEqual(event["outcome"], "failed")
+
+    def test_logged_outcome_is_done_on_success(self):
+        self.run_with({"results": [{"ok": True, "rule": "created"}],
+                       "pushed": True})
+        log = common.STATE_DIR / f"decisions-{common._now()[:4]}.jsonl"
+        event = json.loads(log.read_text().splitlines()[-1])
+        self.assertEqual(event["outcome"], "done")
+
     def test_helper_exception(self):
         c = self.run_with(error=RuntimeError("write helper failed: boom"))
         self.assertEqual(c["status"], "failed")
@@ -452,7 +617,7 @@ class TestWorkItems(FinanceTest):
 
     def test_card_gone_meanwhile_is_noop(self):
         finance.STATE["batch"]["cards"] = []
-        finance._run_write = lambda cmd: {"results": [{"ok": True}],
+        finance.api_cache.run_budget_helper = lambda cmd: {"results": [{"ok": True}],
                                           "pushed": True}
         finance._work_items([("t1", "c1", "Groceries", True, False)])  # must not raise
 
@@ -468,7 +633,7 @@ class TestWorkItems(FinanceTest):
                                  "error": "already categorized"},
                                 {"ok": False, "error": "no such id"}],
                     "pushed": True}
-        finance._run_write = fake
+        finance.api_cache.run_budget_helper = fake
         finance._work_items([("t1", "c1", "Groceries", True, False),
                              ("t2", "c1", "Groceries", True, False),
                              ("t3", "c1", "Groceries", False, False)])
@@ -486,7 +651,7 @@ class TestWorkItems(FinanceTest):
             c["status"] = "in_progress"
         def fake(command):
             raise RuntimeError("write helper failed: boom")
-        finance._run_write = fake
+        finance.api_cache.run_budget_helper = fake
         finance._work_items([("t1", "c1", "Groceries", True, False),
                              ("t2", "c1", "Groceries", True, False)])
         saved = self.saved_cards()
@@ -497,7 +662,7 @@ class TestWorkItems(FinanceTest):
 # ---------------------------------------------------------------- create category
 
 class TestCreateCategory(FinanceTest):
-    """create_category with _run_write patched — validation, single-flight
+    """create_category with run_budget_helper patched — validation, single-flight
     with the apply path, and the outcome shapes."""
 
     def run_with(self, body, result=None, error=None):
@@ -506,12 +671,12 @@ class TestCreateCategory(FinanceTest):
             if error:
                 raise error
             return result
-        saved = finance._run_write
-        finance._run_write = fake
+        saved = finance.api_cache.run_budget_helper
+        finance.api_cache.run_budget_helper = fake
         try:
             return finance._h_create_category(body)
         finally:
-            finance._run_write = saved
+            finance.api_cache.run_budget_helper = saved
 
     def test_name_and_group_required(self):
         ok = {"results": [{"ok": True}], "pushed": True}
@@ -791,21 +956,22 @@ class TestStateView(FinanceTest):
         self.assertFalse(out["job_last_failed"])
         self.assertIsNone(out["job_running_since"])
 
-    def test_job_fields_pick_newest_and_flag_failure(self):
-        finance.CRON_JOBS.write_text(json.dumps({"jobs": [
-            {"name": finance.DAILY_JOB, "id": "j1",
-             "last_run_at": "2026-08-10T07:00:00", "last_status": "ok",
+    def test_job_fields_read_the_scan_job_only(self):
+        common.CRON_JOBS.write_text(json.dumps({"jobs": [
+            {"name": "finance-daily", "id": "j1",
+             "last_run_at": "2026-08-11T10:00:00", "last_status": "ok",
              "next_run_at": "2026-08-12T07:00:00"},
             {"name": finance.SCAN_JOB, "id": "j2",
              "last_run_at": "2026-08-11T09:00:00", "last_status": "error",
              "next_run_at": "2026-08-11T13:55:00"}]}))
         fields = finance._job_fields()
+        # the daily run is newer; the stamps must still be the scan job's
         self.assertEqual(fields["job_last_run_at"], "2026-08-11T09:00:00")
         self.assertEqual(fields["job_next_run_at"], "2026-08-11T13:55:00")
         self.assertTrue(fields["job_last_failed"])
 
     def test_job_running_since_reads_executions(self):
-        conn = sqlite3.connect(finance.CRON_EXECUTIONS)
+        conn = sqlite3.connect(common.CRON_EXECUTIONS)
         conn.execute("CREATE TABLE executions (id INTEGER PRIMARY KEY, "
                      "job_id TEXT, status TEXT, claimed_at TEXT, "
                      "started_at TEXT)")
@@ -815,12 +981,12 @@ class TestStateView(FinanceTest):
         conn.commit()
         conn.close()
         self.assertEqual(
-            finance._job_running_since({"id": "j1"}), "2026-08-11T09:00:05")
-        self.assertIsNone(finance._job_running_since({"id": "other"}))
+            common.job_running_since({"id": "j1"}), "2026-08-11T09:00:05")
+        self.assertIsNone(common.job_running_since({"id": "other"}))
 
 
 class TestFindUncategorized(FinanceTest):
-    """Every test stubs _run_write (the refresh) and subprocess.Popen."""
+    """Every test stubs run_budget_helper (the refresh) and subprocess.Popen."""
 
     def run_with(self, refresh_error=None, popen_error=None):
         self.commands, self.popen_calls = [], []
@@ -833,17 +999,17 @@ class TestFindUncategorized(FinanceTest):
             if popen_error:
                 raise popen_error
             self.popen_calls.append(a[0])
-        saved_write, saved_popen = finance._run_write, finance.subprocess.Popen
-        finance._run_write, finance.subprocess.Popen = fake_write, fake_popen
+        saved_write, saved_popen = finance.api_cache.run_budget_helper, finance.subprocess.Popen
+        finance.api_cache.run_budget_helper, finance.subprocess.Popen = fake_write, fake_popen
         try:
             return finance._h_uncategorized({})
         finally:
-            finance._run_write, finance.subprocess.Popen = saved_write, saved_popen
+            finance.api_cache.run_budget_helper, finance.subprocess.Popen = saved_write, saved_popen
 
     def test_refreshes_then_starts_job_detached(self):
         code, out = self.run_with()
         self.assertEqual((code, out["started"]), (200, finance.SCAN_JOB))
-        self.assertEqual(self.commands, [{"cmd": "refresh"}])
+        self.assertEqual(self.commands, [{"cmd": "pull"}])
         self.assertEqual(self.popen_calls,
                          [["hermes", "cron", "run", finance.SCAN_JOB]])
 
@@ -956,7 +1122,7 @@ class TestAsk(FinanceTest):
         return [json.loads(x) for x in log.read_text().splitlines()]
 
     def make_ask(self, ask_id="ask_x", to="riley@example.org", ids=("t1", "t2"),
-                 created="2026-08-16T00:00:00Z", state="open"):
+                 created=ago(1), state="open"):
         return {"ask_id": ask_id, "to_addr": to, "created_at": created,
                 "subject": finance.ASK_SUBJECT, "state": state,
                 "items": [{"n": n, "transaction_id": i, "date": "2026-08-12",
@@ -1105,9 +1271,22 @@ class TestAsk(FinanceTest):
         self.assertEqual(reasons, {"ask_done": "all items handled",
                                    "ask_old": "expired"})
 
+    # ---- _open_asks_summary
+
+    def test_open_asks_summary_lists_only_open(self):
+        created = ago(1)
+        self.seed({"ask_open": self.make_ask("ask_open", to="one@example.org",
+                                             created=created),
+                   "ask_answered": self.make_ask(
+                       "ask_answered", to="two@example.org", created=created,
+                       state="answered")})
+        self.assertEqual(finance._open_asks_summary(),
+                         [{"ask_id": "ask_open", "to_addr": "one@example.org",
+                           "created_at": created, "items": 2}])
+
 
 class TestCategorizeOne(TestAsk):
-    """categorize_one with _run_write patched — every outcome shape."""
+    """categorize_one with run_budget_helper patched — every outcome shape."""
 
     def categorize(self, results=None, write_error=None, update_rule=True):
         calls = []
@@ -1118,12 +1297,12 @@ class TestCategorizeOne(TestAsk):
                 raise write_error
             return {"results": results, "pushed": True}
 
-        saved = finance._run_write
-        finance._run_write = fake
+        saved = finance.api_cache.run_budget_helper
+        finance.api_cache.run_budget_helper = fake
         try:
             return finance.categorize_one("t1", "Groceries", update_rule), calls
         finally:
-            finance._run_write = saved
+            finance.api_cache.run_budget_helper = saved
 
     def test_ok(self):
         self.queue_budget([], categories=[("c1", "Groceries", "Food")])
@@ -1314,16 +1493,155 @@ class TestEmailCards(TestAsk):
         self.queue_budget([qrow("t1")], categories=self.CATS)
         self.propose(self.body([("t1", "Groceries")]))
         finance._h_batch({"cards": [card("t1")]})
-        saved = finance._run_write
-        finance._run_write = lambda cmd: {"results": [{"ok": True,
+        saved = finance.api_cache.run_budget_helper
+        finance.api_cache.run_budget_helper = lambda cmd: {"results": [{"ok": True,
                                                        "rule": "created"}],
                                           "pushed": True}
         try:
             finance._work_items([("t1", "c1", "Groceries", True, False)])
         finally:
-            finance._run_write = saved
+            finance.api_cache.run_budget_helper = saved
         self.assertEqual([c["status"] for c in self.saved_cards()],
                          ["done", "done"])
+
+
+# ---------------------------------------------------------------- oddities
+
+class TestOddities(FinanceTest):
+    """The oddities queue: rules over the api-cache copy, queue and seen
+    files, the seen endpoint. Charges are dated relative to today because
+    state() reads the real clock."""
+
+    def charge(self, tid, days_ago, cents, payee="p1", category=None):
+        """One spending row in the fake copy; the payee row exists once."""
+        path = finance.API_CACHE / "My-Budget-abc123" / "db.sqlite"
+        conn = sqlite3.connect(path)
+        day = date.today() - timedelta(days=days_ago)
+        conn.execute("INSERT OR IGNORE INTO v_payees VALUES (?, ?)",
+                     (payee, "Shop " + payee))
+        conn.execute("INSERT INTO v_transactions (id, category, transfer_id, "
+                     "date, amount, payee) VALUES (?, ?, NULL, ?, ?, ?)",
+                     (tid, category, int(day.strftime("%Y%m%d")), -cents, payee))
+        conn.commit()
+        conn.close()
+
+    def odd_file(self):
+        return json.loads(finance.ODD_FILE.read_text())
+
+    def seen_file(self):
+        return json.loads(finance.ODD_SEEN_FILE.read_text())
+
+    def test_flagged_charge_is_queued_and_shown(self):
+        self.budget()
+        self.charge("t1", 1, 60000)
+        rows = finance.state()["oddities"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["transaction_id"], "t1")
+        self.assertEqual(rows[0]["payee"], "Shop p1")
+        self.assertEqual(rows[0]["amount"], "-600.00")
+        self.assertEqual(rows[0]["account"], "Checking")
+        self.assertEqual(rows[0]["date"],
+                         (date.today() - timedelta(days=1)).isoformat())
+        self.assertEqual(rows[0]["reasons"],
+                         ["unusually large charge", "new payee"])
+        self.assertEqual(self.odd_file(), {"version": 1, "ids": ["t1"]})
+
+    def test_nothing_flagged_is_an_empty_list(self):
+        self.budget()
+        self.charge("t1", 1, 1000)
+        self.charge("h1", 40, 1000)
+        self.assertEqual(finance.state()["oddities"], [])
+        self.assertFalse(finance.ODD_FILE.exists())   # nothing to write yet
+
+    def test_seen_takes_it_off_for_good(self):
+        self.budget()
+        self.charge("t1", 1, 60000)
+        finance.state()
+        code, out = finance.odd_seen({"transaction_id": "t1"})
+        self.assertEqual((code, out), (200, {"seen": ["t1"]}))
+        self.assertEqual(self.odd_file()["ids"], [])
+        self.assertEqual(self.seen_file(),
+                         {"t1": (date.today() - timedelta(days=1)).isoformat()})
+        self.assertEqual(finance.state()["oddities"], [])
+        self.assertEqual(self.odd_file()["ids"], [])
+
+    def test_seen_wins_over_a_stale_queue(self):
+        # a poll that was mid-rules when the seen tap landed rebuilds from
+        # its old snapshot: the seen file still takes the id off
+        self.budget()
+        self.charge("t1", 1, 60000)
+        finance.ODD["ids"] = ["t1"]
+        finance.ODD_SEEN = {"t1": (date.today() - timedelta(days=1)).isoformat()}
+        self.assertEqual(finance.state()["oddities"], [])
+        self.assertEqual(self.odd_file()["ids"], [])
+
+    def test_seen_unknown_or_missing_id(self):
+        self.assertEqual(finance.odd_seen({"transaction_id": "nope"})[0], 404)
+        self.assertEqual(finance.odd_seen({})[0], 400)
+
+    def test_seen_all(self):
+        self.budget()
+        self.charge("t1", 3, 60000, payee="p1")
+        self.charge("t2", 1, 60000, payee="p2")
+        finance.state()
+        code, out = finance.odd_seen({"all": True})
+        self.assertEqual((code, out), (200, {"seen": ["t2", "t1"]}))
+        self.assertEqual(self.odd_file()["ids"], [])
+        self.assertEqual(set(self.seen_file()), {"t1", "t2"})
+        self.assertEqual(finance.state()["oddities"], [])
+        self.assertEqual(finance.odd_seen({"all": True}), (200, {"seen": []}))
+
+    def test_seen_entries_outside_the_window_are_purged(self):
+        self.budget()
+        old = (date.today() - timedelta(days=8)).isoformat()
+        finance.ODD_SEEN = {"old": old}
+        self.charge("t1", 1, 60000)
+        finance.state()
+        finance.odd_seen({"transaction_id": "t1"})
+        self.assertNotIn("old", self.seen_file())
+        self.assertIn("t1", self.seen_file())
+
+    def test_queued_charge_outlives_the_window(self):
+        self.budget()
+        self.charge("t1", 8, 60000)
+        self.assertEqual(finance.state()["oddities"], [])   # outside the window
+        finance.ODD["ids"] = ["t1"]
+        rows = finance.state()["oddities"]
+        self.assertEqual([r["transaction_id"] for r in rows], ["t1"])
+
+    def test_queued_charge_no_longer_flagged_drops(self):
+        self.budget(categories=[("c1", "Transfers", "Ignored")])
+        self.charge("t1", 1, 60000)
+        finance.state()
+        self.assertEqual(self.odd_file()["ids"], ["t1"])
+        path = finance.API_CACHE / "My-Budget-abc123" / "db.sqlite"
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE v_transactions SET category = 'c1' WHERE id = 't1'")
+        conn.commit()
+        conn.close()
+        self.assertEqual(finance.state()["oddities"], [])
+        self.assertEqual(self.odd_file()["ids"], [])
+
+    def test_unreadable_copy_keeps_the_last_rows(self):
+        self.budget()
+        self.charge("t1", 1, 60000)
+        rows = finance.state()["oddities"]
+        import shutil
+        shutil.rmtree(finance.API_CACHE)
+        self.assertEqual(finance.state()["oddities"], rows)
+        self.assertEqual(self.odd_file()["ids"], ["t1"])
+
+    def test_newest_first(self):
+        self.budget()
+        self.charge("t1", 3, 60000, payee="p1")
+        self.charge("t2", 1, 60000, payee="p2")
+        rows = finance.state()["oddities"]
+        self.assertEqual([r["transaction_id"] for r in rows], ["t2", "t1"])
+
+    def test_boot_creates_both_files(self):
+        finance.boot()
+        self.assertEqual(self.odd_file(), {"version": 1, "ids": []})
+        self.assertEqual(self.seen_file(), {})
 
 
 if __name__ == "__main__":

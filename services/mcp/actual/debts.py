@@ -1,45 +1,76 @@
 #!/usr/bin/env python3
-"""debts — the Debt section at the end of the cash-flow status view.
+"""debts — the Assets and Debt section at the end of the cash-flow status
+view.
 
-Reads vault/docs/finances/debts.md, a hand-kept file: three tier headings
-(## high, ## medium, ## low), one top-level bullet per debt, indented
-`key: value` fields (rate, lender, payment, note), and a balances list with
-one `YYYY-MM: $amount` line per month, oldest first. `?` marks a value not
+Reads two hand-kept files of the same shape: one top-level bullet per
+entry, indented `key: value` fields, and a balances list with one
+`YYYY-MM: $amount` line per month, oldest first. `?` marks a value not
 known yet; `(text)` after a value is a note the report prints.
 
-status_block() returns the section text ('' without the file):
+  - vault/docs/finances/assets.md — one `## assets` heading; home values
+    and retirement accounts; note field only.
+  - vault/docs/finances/debts.md — three tier headings (## high,
+    ## medium, ## low); rate, bank, payment and note fields.
 
-  - one line per tier: total of each debt's last known balance; high and
-    medium also carry the change, worded "paid down" / "up", summed from
-    each debt's own pace (its two newest balances, spread over the months
-    between them — so a quarterly entry still reads as a monthly figure)
-  - one line per high and medium debt: balance, pace, payoff month, and
-    interest at rate/12 x balance. Payoff comes from amortization when the
-    rate and a '$N monthly' payment are set, else from the pace.
-  - one line per low debt: balance only — payoff time matters least there
-  - Check: parse problems, debts with no balance at all, and balances older
-    than the file's newest month line (a `?` line counts, so the cron's
-    populate makes a new month flag every unfilled debt)
+The bank field is read and checked but never printed — it says where an
+entry is held, which the report has no line for.
 
-validate() returns every problem in the file for the validate_finance_files
-tool. populate_month(today) inserts a `- YYYY-MM: ?` line into every
-balances list missing the current month and returns the names touched — the
-finance-daily cron calls it, so a new month asks for its numbers by itself.
+status_block(today, detailed) returns (text, checks) — the section body
+and the check items kept apart, so the report files them under its own
+headings (('', []) when neither file exists):
+
+  - "Assets:" first, then one section per debt tier (High Interest
+    Debt, Medium Interest Debt, Low Interest Debt). An entry is a
+    name-and-balance row; detailed adds a history row and one row
+    holding every remaining fact. The history row shows the two most
+    recent quarter months, newest first, each with the percent the
+    current balance changed against it, like the Actual rows; a quarter
+    month with no balance typed in yet prints '-'. An asset carries its
+    monthly change (the two newest balances spread over the months
+    between them — so a quarterly entry still reads as a monthly
+    figure) in both sizes; only its history row needs detailed. A
+    detailed debt carries the same change math (worded paid down / paid
+    off), plus payoff month and interest at rate/12 x balance for the
+    high and medium tiers; payoff comes from amortization when the rate
+    and a '$N monthly' payment are set, else from the pace. Low debts
+    get balances only. A regular-size debt is the balance row alone —
+    the rate rides in its name. An entry with no real balance yet gets
+    a placeholder line with its note instead.
+  - checks: parse problems and each entry whose newest balance line is
+    an unfilled `?` — the cron's quarterly populate is what asks
+
+validate() returns every problem in both files for the
+validate_finance_files tool. populate_month(today), in January, April,
+July and October only, inserts a `- YYYY-MM: ?` line into every balances
+list missing the current month (both files) and returns the names
+touched — the finance-daily cron calls it, so a new quarter asks for its
+numbers by itself.
 
 Cents inside, whole dollars printed, like cash_flow.py.
 """
 
+import calendar
 import math
 import os
 import re
+from datetime import date
 
 DEBTS_FILE = os.path.expanduser("~/Iris/vault/docs/finances/debts.md")
+ASSETS_FILE = os.path.expanduser("~/Iris/vault/docs/finances/assets.md")
 TIERS = ["high", "medium", "low"]
-FIELD_KEYS = {"rate", "lender", "payment", "note"}
+ASSET_TIERS = ["assets"]
+# the printed section subtitles; the file headings stay the bare tier names
+TIER_TITLES = {"assets": "Assets", "high": "High Interest Debt",
+               "medium": "Medium Interest Debt", "low": "Low Interest Debt"}
+FIELD_KEYS = {"rate", "bank", "payment", "note"}
 
 
 def _label(idx):
     return f"{idx // 12:04d}-{idx % 12 + 1:02d}"
+
+
+def _mon(idx):
+    return calendar.month_abbr[idx % 12 + 1]
 
 
 def _money(cents):
@@ -74,12 +105,11 @@ def _payment(fields):
 
 # ---------------------------------------------------------------- parse
 
-def _parse(path=None):
-    """([debt], [problem]); ([], None) when the file does not exist. A debt
-    is {name, tier, fields, has_balances, balances: [{idx, cents, note}]},
-    cents None for `?`. Bad lines land in problems and are skipped, so one
-    typo never hides the rest of the file."""
-    path = path or DEBTS_FILE   # read at call time; tests repoint the global
+def _parse(path, tiers):
+    """([entry], [problem]); ([], None) when the file does not exist. An
+    entry is {name, tier, fields, has_balances, balances: [{idx, cents,
+    note}]}, cents None for `?`. Bad lines land in problems and are
+    skipped, so one typo never hides the rest of the file."""
     try:
         text = open(path, encoding="utf-8").read()
     except OSError:
@@ -90,10 +120,10 @@ def _parse(path=None):
         h = re.match(r"^##\s+(.*\S)\s*$", line)
         if h:
             name = h.group(1).strip().casefold()
-            tier = name if name in TIERS else None
+            tier = name if name in tiers else None
             if tier is None:
                 problems.append(f"heading '## {h.group(1)}' is not a tier "
-                                "(high / medium / low)")
+                                f"({' / '.join(tiers)})")
             cur, in_balances = None, False
             continue
         m = re.match(r"^( *)-\s+(.*\S)\s*$", line)
@@ -158,21 +188,24 @@ def _parse(path=None):
 
 # ---------------------------------------------------------------- maths
 
-def _derive(d):
-    """latest (idx, cents), monthly pace (positive = paying down), rate,
-    payment, interest and payoff idx for one debt; None where the file gives
-    too little."""
+def _derive(d, kind="debt"):
+    """latest (idx, cents), monthly pace (debt: positive = paying down;
+    asset: positive = growing), rate, payment, interest and payoff idx for
+    one entry; None where the file gives too little. Assets get no rate
+    math: payoff and interest stay None."""
     real = [(b["idx"], b["cents"]) for b in d["balances"]
             if b["cents"] is not None]
     v = {"latest": real[-1] if real else None, "pace": None,
          "rate": _rate(d["fields"]), "payment": _payment(d["fields"]),
-         "interest": None}
+         "interest": None, "payoff": None}
     if len(real) >= 2:
         (i0, c0), (i1, c1) = real[-2], real[-1]
-        v["pace"] = (c0 - c1) / (i1 - i0)
-    if v["latest"] and v["rate"] is not None:
-        v["interest"] = v["latest"][1] * v["rate"] / 1200
-    v["payoff"] = _payoff(v)
+        v["pace"] = (c0 - c1) / (i1 - i0) if kind == "debt" \
+            else (c1 - c0) / (i1 - i0)
+    if kind == "debt":
+        if v["latest"] and v["rate"] is not None:
+            v["interest"] = v["latest"][1] * v["rate"] / 1200
+        v["payoff"] = _payoff(v)
     return v
 
 
@@ -198,133 +231,176 @@ def _payoff(v):
     return None
 
 
-def _pace_text(pace):
+def _pace_text(pace, kind="debt"):
     d = round(pace / 100)
     if d == 0:
         return "no change"
+    if kind == "asset":
+        return f"up {_money(pace)} monthly" if d > 0 \
+            else f"down {_money(-pace)} monthly"
     return f"paid down {_money(pace)} monthly" if d > 0 \
         else f"up {_money(-pace)} monthly"
 
 
 # ---------------------------------------------------------------- report
 
-def _debt_lines(d, v, detail):
-    """The report lines for one debt: the balance line (with pace, payoff
-    and interest when detail is on), then any notes indented under it."""
+def _hist_line(d, v, months):
+    """'  - Jul $100,000 (+2%) · Apr -' — the balance at each of the given
+    months (the two most recent quarter months), newest first, with the
+    percent the current balance changed against it, like the history row
+    on the Actual rows; the row always shows, so the report's shape does
+    not depend on how many balances are typed in. A month with no balance
+    typed in yet prints '-'. The percent is left out for a zero balance
+    and for the month the current balance itself came from. None when
+    there is no real balance at all (the placeholder line says it)."""
+    by_idx = {b["idx"]: b["cents"] for b in d["balances"]
+              if b["cents"] is not None}
+    if not by_idx:
+        return None
+    cur_idx, cur = v["latest"]
+    parts = []
+    for i in months:
+        if i not in by_idx:
+            parts.append(f"{_mon(i)} -")
+            continue
+        was = by_idx[i]
+        pct = (f" ({round((cur - was) / abs(was) * 100):+d}%)"
+               if was and i != cur_idx else "")
+        parts.append(f"{_mon(i)} {_money(was)}{pct}")
+    return "  - " + " · ".join(parts)
+
+
+def _entry_lines(d, v, detail, months, kind="debt", detailed=True):
+    """The report rows for an entry with a known balance: `- name (rate):
+    balance`, then — detailed only — the month history on its own row, then
+    one row holding every extra fact. The rate shows for debts only. The
+    facts are the pace for every entry, payoff and interest for debts when
+    detail is on (high and medium), then any notes; that row is left out
+    when there are none. A regular-size debt is the balance row alone; a
+    regular-size asset keeps its facts row. The change against an earlier
+    month is not a fact here — the history row's percents say it."""
     name = d["name"]
     rate = d["fields"].get("rate", "")
-    if rate and rate != "?":
+    if kind == "debt" and rate and rate != "?":
         name += f" ({rate})"
-    parts = [f"- {name}: {_money(v['latest'][1])}"]
+    lines = [f"- {name}: {_money(v['latest'][1])}"]
+    if detailed:
+        hist = _hist_line(d, v, months)
+        if hist:
+            lines.append(hist)
+    if kind == "debt" and not detailed:
+        return lines
+    facts = []
     if detail:
         if v["pace"] is not None:
-            parts.append(_pace_text(v["pace"]))
+            facts.append(_pace_text(v["pace"], kind))
         if v["payoff"] is not None:
-            parts.append(f"paid off ~{_label(v['payoff'])}")
+            facts.append(f"paid off ~{_label(v['payoff'])}")
         if v["interest"] is not None:
-            parts.append(f"interest ~{_money(v['interest'])} monthly")
-    out = [" | ".join(parts)]
+            facts.append(f"interest ~{_money(v['interest'])} monthly")
     if d["fields"].get("note"):
-        out.append(f"    {d['fields']['note']}")
+        facts.append(d["fields"]["note"])
     latest_note = next((b["note"] for b in reversed(d["balances"])
                         if b["cents"] is not None), "")
     if latest_note:
-        out.append(f"    {latest_note}")
-    return out
+        facts.append(latest_note)
+    if facts:
+        lines.append("  - " + " · ".join(facts))
+    return lines
 
 
-def status_block():
-    """The Debt section, or '' when there is no debts file and nothing to
-    say. Broken entries surface in the Check list instead of vanishing."""
-    debts, problems = _parse()
-    if problems is None:
-        return ""
-    checks = list(problems)
-    derived = {d["name"]: _derive(d) for d in debts}
-    newest_any = max((b["idx"] for d in debts for b in d["balances"]),
-                     default=None)
-    newest_real = max((v["latest"][0] for v in derived.values()
-                       if v["latest"]), default=None)
+def _placeholder_line(d):
+    """`- name: no balance yet — note` for an entry whose balances are all
+    `?`; the note is the newest balance note, else the field note."""
+    note = next((b["note"] for b in reversed(d["balances"])
+                 if b["note"]), "") or d["fields"].get("note", "")
+    return (f"- {d['name']}: no balance yet"
+            + (f" — {note}" if note else ""))
 
-    lines = [f"Debt — {_label(newest_real)}:"
-             if newest_real is not None else "Debt:"]
-    total, total_missing, any_valued = 0, [], False
-    for tier in TIERS:
-        members = [d for d in debts if d["tier"] == tier]
-        if not members:
+
+def status_block(today=None, detailed=True):
+    """(text, checks) — the Assets and Debt section body (assets first,
+    then one section per debt tier) and the check items, so the report
+    files them under its own headings. ('', []) when neither file exists
+    and there is nothing to say. Broken entries surface in checks instead
+    of vanishing. today pins the report date (tests, a past month's
+    report); balance lines after it are left out,
+    and the history months are the two most recent quarter months
+    before or at it. detailed=False is the regular report size: no
+    history rows, and debts show only balance and rate."""
+    today = today or date.today()
+    idx = today.year * 12 + today.month - 1
+    q0 = idx - idx % 3
+    months = (q0, q0 - 3)
+    lines, checks = [], []
+    for path, tiers, kind in ((ASSETS_FILE, ASSET_TIERS, "asset"),
+                              (DEBTS_FILE, TIERS, "debt")):
+        entries, problems = _parse(path, tiers)
+        if problems is None:
             continue
-        valued = [d for d in members if derived[d["name"]]["latest"]]
-        missing = [d["name"] for d in members
-                   if not derived[d["name"]]["latest"]]
-        total_missing += missing
-        if not valued:
-            lines.append(f"- {tier}: no balance yet — {', '.join(missing)}")
-            continue
-        any_valued = True
-        tier_total = sum(derived[d["name"]]["latest"][1] for d in valued)
-        total += tier_total
-        row = f"- {tier}: {_money(tier_total)}"
-        if missing:
-            row += f" (without {', '.join(missing)})"
-        if tier != "low":
-            paces = [derived[d["name"]]["pace"] for d in valued
-                     if derived[d["name"]]["pace"] is not None]
-            if paces:
-                row += f" | {_pace_text(sum(paces))}"
-        lines.append(row)
-    if any_valued:
-        row = f"- total: {_money(total)}"
-        if total_missing:
-            row += f" (without {', '.join(total_missing)})"
-        lines.append(row)
-
-    hm = [d for d in debts if d["tier"] != "low" and derived[d["name"]]["latest"]]
-    if hm:
-        lines += ["", "High and medium:"]
-        for d in hm:
-            lines += _debt_lines(d, derived[d["name"]], detail=True)
-    low = [d for d in debts if d["tier"] == "low" and derived[d["name"]]["latest"]]
-    if low:
-        lines += ["", "Low:"]
-        for d in low:
-            lines += _debt_lines(d, derived[d["name"]], detail=False)
-
-    for d in debts:
-        v = derived[d["name"]]
-        if v["latest"] is None:
-            note = next((b["note"] for b in reversed(d["balances"])
-                         if b["note"]), "") or d["fields"].get("note", "")
-            checks.append(f"{d['name']}: no balance yet"
-                          + (f" — {note}" if note else ""))
-        elif newest_any is not None and v["latest"][0] < newest_any:
-            checks.append(f"{d['name']}: no {_label(newest_any)} balance — "
-                          f"using {_label(v['latest'][0])}")
-    if checks:
-        lines += ["", "Check:"] + [f"- {c}" for c in checks]
-    if not debts and not checks:
-        return ""
-    return "\n".join(lines)
+        checks += problems
+        # a past month's report reads the files as of that month: later
+        # balance lines are cut away
+        for e in entries:
+            e["balances"] = [b for b in e["balances"] if b["idx"] <= idx]
+        derived = {e["name"]: _derive(e, kind) for e in entries}
+        for tier in tiers:
+            members = [e for e in entries if e["tier"] == tier]
+            if not members:
+                continue
+            lines += ["", f"{TIER_TITLES[tier]}:"]
+            for e in members:
+                v = derived[e["name"]]
+                if v["latest"] is None:
+                    lines.append(_placeholder_line(e))
+                else:
+                    lines += _entry_lines(e, v, detail=tier != "low",
+                                          months=months, kind=kind,
+                                          detailed=detailed)
+        # the ask: an entry whose newest balance line is an unfilled `?`
+        # (the cron's quarterly populate put it there); a real newest line
+        # is never flagged, however old — the next quarter's populate asks
+        # again
+        for e in entries:
+            v = derived[e["name"]]
+            if v["latest"] is not None and e["balances"] \
+                    and e["balances"][-1]["cents"] is None:
+                checks.append(f"{e['name']}: no "
+                              f"{_label(e['balances'][-1]['idx'])} balance"
+                              f" — using {_label(v['latest'][0])}")
+    if not lines and not checks:
+        return "", []
+    return "\n".join(lines).lstrip("\n"), checks
 
 
 # ---------------------------------------------------------------- validate
 
 def validate():
-    """Every problem in debts.md, [] when clean — the debt half of the
-    validate_finance_files tool."""
-    debts, problems = _parse()
-    if problems is None:
-        return ["debts.md: not found"]
-    out = [f"debts.md: {p}" for p in problems]
-    for d in debts:
-        f = d["fields"]
-        if not d["has_balances"]:
-            out.append(f"debts.md: {d['name']}: no balances list")
-        if f.get("rate") and f["rate"] != "?" and _rate(f) is None:
-            out.append(f"debts.md: {d['name']}: rate {f['rate']!r} has no "
-                       "leading percent number")
-        if f.get("payment") and f["payment"] != "?" and _payment(f) is None:
-            out.append(f"debts.md: {d['name']}: payment {f['payment']!r} "
-                       "does not start with '$N monthly'")
+    """Every problem in assets.md and debts.md, [] when both are clean —
+    the hand-kept-file half of the validate_finance_files tool. The
+    rate/payment field checks apply to debts only; assets carry none."""
+    out = []
+    for path, tiers, kind, label in (
+            (ASSETS_FILE, ASSET_TIERS, "asset", "assets.md"),
+            (DEBTS_FILE, TIERS, "debt", "debts.md")):
+        entries, problems = _parse(path, tiers)
+        if problems is None:
+            out.append(f"{label}: not found")
+            continue
+        out += [f"{label}: {p}" for p in problems]
+        for e in entries:
+            f = e["fields"]
+            if not e["has_balances"]:
+                out.append(f"{label}: {e['name']}: no balances list")
+            if kind != "debt":
+                continue
+            if f.get("rate") and f["rate"] != "?" and _rate(f) is None:
+                out.append(f"{label}: {e['name']}: rate {f['rate']!r} has "
+                           "no leading percent number")
+            if f.get("payment") and f["payment"] != "?" \
+                    and _payment(f) is None:
+                out.append(f"{label}: {e['name']}: payment {f['payment']!r}"
+                           " does not start with '$N monthly'")
     return out
 
 
@@ -332,13 +408,24 @@ def validate():
 
 def populate_month(today):
     """Insert a `- YYYY-MM: ?` line for today's month into every balances
-    list that lacks one, after that list's last line; returns the debt names
-    touched, [] when nothing was missing or there is no file. The only write
-    this module makes, and only added lines — the rest of the file is kept
-    byte for byte."""
+    list that lacks one, in assets.md and debts.md; returns the entry
+    names touched (assets first), [] when nothing was missing or neither
+    file exists. Quarter months only (January, April, July, October) —
+    the ask comes every 3 months, so other months add nothing. The only
+    write this module makes, and only added lines — the rest of each file
+    is kept byte for byte."""
     idx = today.year * 12 + today.month - 1
+    if idx % 3 != 0:
+        return []
+    return (_populate_file(ASSETS_FILE, ASSET_TIERS, idx)
+            + _populate_file(DEBTS_FILE, TIERS, idx))
+
+
+def _populate_file(path, tiers, idx):
+    """The one-file half of populate_month: the names whose balances list
+    got the month-idx `?` line, in file order."""
     try:
-        with open(DEBTS_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.read().splitlines(keepends=True)
     except OSError:
         return []
@@ -349,7 +436,7 @@ def populate_month(today):
         h = re.match(r"^##\s+(.*\S)\s*$", line)
         if h:
             name = h.group(1).strip().casefold()
-            tier = name if name in TIERS else None
+            tier = name if name in tiers else None
             cur = None
             continue
         m = re.match(r"^( *)-\s+(.*\S)\s*$", line)
@@ -376,6 +463,6 @@ def populate_month(today):
         lines[-1] += "\n"
     for at, _ in sorted(inserts, reverse=True):
         lines.insert(at, f"    - {_label(idx)}: ?\n")
-    with open(DEBTS_FILE, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.writelines(lines)
     return [name for _, name in sorted(inserts)]

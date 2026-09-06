@@ -9,10 +9,26 @@ Turn new inbox emails into sets of proposed actions the user approves with one t
 
 ## Flow (the cron job runs this)
 
-1. Call `scan` (no arguments). It returns the new emails (not in a set, not ignored) and summaries of all pending sets.
-2. Read every new email, then group them.
-3. For each group: ignore it or build one actionable set, then call `save_set` once per group.
-4. Final message: exactly `[SILENT]` — the job delivers nothing.
+1. Call `scan` (no arguments). It returns the new emails (not in a set, not ignored) and summaries of all pending sets. Each new email arrives as sender, subject, date, id and a short snippet — not the whole email.
+2. Group the new emails from what their snippets show.
+3. Read the ones you need with `read_email` — see "Reading emails" below.
+4. For each group: ignore it or build one actionable set, then call `save_set` once per group.
+   - Emails are referenced by id string only — in the set's `emails` list and in archive_email/open_email row args. Copy ids exactly as scan returned them; the service stamps subject, sender and date itself and rejects unknown ids.
+5. Final message: exactly `[SILENT]` — the job delivers nothing.
+
+## Reading emails
+
+- `scan` hands over a snippet per email so the whole scan fits one tool result. `read_email` returns one email whole: header block, full body, link list, calendar invitation data.
+- A body ending in `[snippet — call read_email …]` was cut there. One without that line is already the whole text.
+- Read every email of a group before proposing a set for it. A set's rows must never rest on a cut snippet.
+- Read as well whenever the snippet leaves the decision open:
+  - a person wrote it and the subject does not settle what they want
+  - it could be a meeting time proposed in plain text, with no calendar attachment
+  - the link or detail you need falls past the cut
+- Do not read automated mail whose sender and subject already settle it — receipts, order and shipping notices, newsletters, social notifications. Those are ignored on the header alone.
+- Invitation emails keep their calendar data and their full link list inline, so resolving series state and meeting links needs no read.
+- Injected mail and a finance-review reply always arrive whole, never snippetted.
+- Thread follow-ups carry their own id and their own snippet; `read_email` opens one the same way.
 
 ## Grouping
 
@@ -49,7 +65,7 @@ Turn new inbox emails into sets of proposed actions the user approves with one t
 - A plain email proposing or confirming a meeting time (no ICS attached) is actionable.
   - A settled time (both sides already agreed): propose one create_event for it, assumption stated in the rationale.
   - A time still open for the user to pick (someone proposes a time or asks when): propose time suggestions — see below.
-  - Never ignore it or archive it without a proposal — the user denies it if they do not want the event.
+  - Never ignore it or archive it without a proposal — the user denies if they do not want the event.
 - A time stated in another timezone ("3pm ET") converts to local time first — event times are always local.
 - No cleanup proposals for past events; fine when they vanish with a deleted series.
 - A missing fact that changes the action (which day, which room): still propose the likely option, and state the assumption plainly in the rationale.
@@ -67,6 +83,21 @@ Turn new inbox emails into sets of proposed actions the user approves with one t
   - Check Personal with macos_calendar list_events; never suggest a time that conflicts with an existing event.
 - the user approves one candidate or none; no candidate row depends on another.
 
+## Reminders
+
+- The rows here can write the calendar, archive mail, and categorize transactions. Anything else an email asks for needs a person to act: the user, Alex, or Riley.
+- For each such ask, decide who has to act and when, then decide whether a create_reminder row helps. Not every ask needs one:
+  - A reply the user can send on the spot needs none; the open_email row covers it.
+  - Work that takes a login, a document, an errand, or another day gets one, next to the open_email row.
+- Pick the list from who acts and when:
+  - Next: the user, within about a week.
+  - Later: the user, later than that.
+  - Alex or Riley: the task is that person's.
+- args: `name` (the task as one plain line, naming the thing and the person who asked), `list`, `due` (YYYY-MM-DD, only when the email names or implies a date), `notes` (max 200 characters: the detail the user needs at hand, such as what exactly was asked and where the reply goes).
+- Before proposing, call search_reminders with the task's key words on that list; an open reminder that already covers the task gets no row.
+- Literal row: `{"kind": "create_reminder", "label": "Remind the user to send Dana the 401(k) investment options list", "args": {"name": "Send Dana the 401(k) investment options list", "list": "Next", "notes": "Dana Whitfield asked on Sep 1: export the list from the plan site and reply to their email"}}`
+- A reminder row goes before the open_email row.
+
 ## Thread follow-ups (thread_after)
 
 - The scan attaches `thread_after` to new emails and to pending sets that carry a suggestion or open_email row: the messages in the same thread received after that email, oldest first.
@@ -76,8 +107,8 @@ Turn new inbox emails into sets of proposed actions the user approves with one t
 - For a time-suggestion case, three outcomes:
   - No `from_you` message in thread_after: add one open_email row before the archive row.
     - Label: one sentence telling the user to reply with their chosen time, naming the sender.
-    - args.email is the member email (id, subject, from, receivedAt) — the page renders an open-in-webmail button; approving only marks the row done.
-    - Example row: `{"kind": "open_email", "label": "Reply to Sam with the time you pick", "args": {"email": {"id": "…", "subject": "…", "from": "Sam <sam@example.org>", "receivedAt": "2026-08-11T21:28"}}}`
+    - args.email is the member email's id string — the page renders an open-in-Webmail button; approving only marks the row done.
+    - Example row: `{"kind": "open_email", "label": "Reply to Sam with the time you pick", "args": {"email": "<id>"}}`
   - A `from_you` message names one settled time: propose one create_event for that time (no candidates, no open_email row), superseding the candidates set if one is pending.
   - A `from_you` message exists but settles nothing ("let me check"): keep the candidate rows, no open_email row.
 - The archive row stays last; an open_email row goes right before it.
@@ -110,14 +141,14 @@ Turn new inbox emails into sets of proposed actions the user approves with one t
 ## Calendars
 
 - Meetings with the user, with or without a Meet/Zoom link → Personal.
-- Condo events (the Alder HOA: fire alarm, food truck, garage works) → Partner; the partner is mostly there.
+- Condo events (the Alder HOA: fire alarm, food truck, garage works) → Partner; Partner is mostly there.
 - Never write the Family calendar; the busy-events mirror syncs it from Personal.
 - A set that writes Personal gets one mirror_kick row, after its event writes.
 
 ## Sets
 
 - Every actionable set normally ends with an archive_email row covering all member emails — except iris:-prefixed members, which are never archived.
-- Row kinds: create_event, update_event, delete_event, archive_email, mirror_kick, open_email, categorize_transaction. Calendars: Personal, Partner only.
+- Row kinds: create_event, update_event, delete_event, archive_email, mirror_kick, open_email, categorize_transaction, create_reminder. Calendars: Personal, Partner only. Reminder lists: Next, Later, Alex, Riley only.
 - Rationale: at most 3 short sentences, plain words, one idea per sentence (ASD-STE100 style).
   - State the final state, what the calendar holds now, and any assumption.
   - ICS forensics (uids, stamped times, sequence numbers) stay out — the emails hold them.
@@ -136,7 +167,7 @@ Turn new inbox emails into sets of proposed actions the user approves with one t
 - Rows execute in the order the user approves them, one at a time; order the array so top-to-bottom works.
   - A replacement's old-series delete_event comes before the create_event for the new series.
   - A delete_event that targets the new series (a canceled occurrence) comes after the create_event that makes it.
-  - mirror_kick after the event writes; open_email before archive_email; archive_email last.
+  - mirror_kick after the event writes; create_reminder before open_email; open_email before archive_email; archive_email last.
   - A row executed before its prerequisite lands fails its pre-check (an exception-occurrence delete before its create matches nothing); repair is manual.
 - A new scan that makes a pending set outdated: pass its id in supersedes.
 - A denied row must not come back with identical arguments — the service pre-denies it; change the proposal or leave it.
@@ -148,8 +179,8 @@ Turn new inbox emails into sets of proposed actions the user approves with one t
 
 - Casey (Thursday Run Club): updated/canceled invitations collapse to the final series state; large changes replace the series.
 - calsync@example.org: the calendar sync service; group with the original sender's emails for the same event.
-- Alder HOA: condo notices → Partner events. "ACTION REQUIRED" items whose day depends on the user's details: propose with the assumption stated.
-- The run club's booking service (scheduling@example.org): booking reminders carry the video link; the auto-imported calendar event's notes hold only boilerplate, no link. Check the event and propose the update_event adding the link.
+- The Alder HOA: condo notices → Partner events. "ACTION REQUIRED" items whose day depends on the user's details: propose with the assumption stated.
+- The run club's booking service (scheduling@example.org): its reminders carry the Zoom link; the auto-imported calendar event's notes hold only the booking service boilerplate, no link. Check the event and propose the update_event adding the link.
 
 ## Worked example: the run-club set
 

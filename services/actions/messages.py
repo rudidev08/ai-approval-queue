@@ -17,7 +17,7 @@ one-line reason, and the source facts (sender, chat label, received date,
 original name, kind). The page offers a destination dropdown from the cached
 records catalog; the chosen location travels with the approve call and is
 validated against the cache here — it is never stored card data. Approving
-runs export_attachment (copy into the records inbox) then save_file (move
+runs export_attachment_to_inbox (copy into the records inbox) then save_file (move
 out of the inbox into the location). Denying drops the card; a success card
 leaves at the next scan. run_failed cards stay approvable: export only
 copies, and a failed save_file already deleted the inbox copy, so an
@@ -52,10 +52,13 @@ Endpoints (HANDLERS; guards and dispatch live in server.py):
 - POST /api/messages/batch        {cards: [...], ignored: [ids]} from a good
                                   run, {error: {step, message}} from a failed
                                   one. A good batch clears the error record
-- POST /api/messages/resolve      {attachment_id, decision, location_id on
-                                  approve}: deny drops the card; approve runs
-                                  export + save_file in a thread (202). One
-                                  execution at a time area-wide (409)
+- POST /api/messages/deny         {attachment_id}: drop the card; the ledger
+                                  keeps it from coming back
+- POST /api/messages/apply        {items: [{attachment_id, location_id}]}: one
+                                  or many cards, all-or-nothing — any invalid
+                                  item refuses the whole call. Runs export +
+                                  save_file for each in one thread, in order
+                                  (202). One apply at a time area-wide (409)
 - POST /api/messages/hide         {attachment_id} for one saved card,
                                   {all: true} for every saved card: the card
                                   leaves the page before the next scan would
@@ -73,8 +76,8 @@ import json
 import os
 import pathlib
 import re
-import sqlite3
 import subprocess
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -83,12 +86,15 @@ from common import _log, _now
 
 APP = pathlib.Path(__file__).resolve().parent
 IRIS = APP.parent.parent
+sys.path.append(str(IRIS / "services" / "mcp" / "common"))
+import call_host_tool  # noqa: E402
+import hermes_env  # noqa: E402
+
 STATE_FILE = common.STATE_DIR / "messages.json"
 ENV_FILE = APP / "messages.env"
 
-MESSAGES_URL = "http://127.0.0.1:8853/mcp"   # host app's macos_messages
-CONTACTS_URL = "http://127.0.0.1:3119/mcp"   # host app's macos_contacts
-HOST_TOKEN = pathlib.Path.home() / "Library/Application Support/com.example.iris.host/token"
+MESSAGES_PORT = 8853   # host app's macos_messages
+CONTACTS_PORT = 3119   # host app's macos_contacts
 RECORDS_SERVER = IRIS / "services" / "mcp" / "records" / "server.py"
 UV = "/Users/me/.local/bin/uv"
 TOOL_TIMEOUT = 45
@@ -97,8 +103,6 @@ FAILURE_MARKERS = ("FAILED:", "REJECTED:", "PARTIAL:")
 # the cron job the page's rescan key starts (the run claims the job, so a
 # second tap while one is going cannot fire it twice)
 CRON_JOB = "messages-attach-scan"
-CRON_JOBS = pathlib.Path.home() / ".hermes/cron/jobs.json"
-CRON_EXECUTIONS = pathlib.Path.home() / ".hermes/cron/executions.db"
 
 STATUS_CAP = 300     # card status_text bound (the log bounds its result at 500)
 REASON_CAP = 150     # LLM reason bound — the page shows it verbatim
@@ -139,26 +143,9 @@ def empty_state():
 STATE = empty_state()
 
 
-def _write_json(path, obj):
-    """tmp file + fsync + os.replace + dir fsync, mode 0600. Caller holds LOCK."""
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(obj, f, indent=2)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    dfd = os.open(common.STATE_DIR, os.O_RDONLY)
-    try:
-        os.fsync(dfd)
-    finally:
-        os.close(dfd)
-
-
 def save_state(state):
     """Caller holds LOCK."""
-    _write_json(STATE_FILE, state)
+    common.write_json(STATE_FILE, state)
 
 
 def _find_card(state, attachment_id):
@@ -183,16 +170,9 @@ def _trim_ledger(state):
 
 def env_config():
     """The area's keys out of messages.env (plain KEY=VALUE parse — the same
-    semantics as finance_scan's env_config, so repeated keys collapse to the
+    semantics as finance_jobs's env_config, so repeated keys collapse to the
     last one and MESSAGES_CHATS is one comma-separated list)."""
-    values = {}
-    with open(ENV_FILE, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            values[key.strip()] = value.strip().strip('"').strip("'")
+    values = hermes_env.read(ENV_FILE)
     raw = values.get("MESSAGES_CHATS", "")
     chats = []
     for pair in raw.split(","):
@@ -221,33 +201,22 @@ def _result_ok(result):
     return ok, text
 
 
-def call_host(url, tool, args):
-    """(ok, text) from one streamable-HTTP call to one of the host app's
-    servers. One short-lived session per call, bearer read per call; ok = no
-    MCP error and no FAILED:/REJECTED: marker."""
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
-
-    async def call():
-        token = HOST_TOKEN.read_text().strip()
-        async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
-            async with ClientSession(r, w) as session:
-                await session.initialize()
-                return await session.call_tool(tool, args)
-
+def call_host(port, tool, args):
+    """(ok, text) from one call to one of the host app's servers — common's
+    call_host_tool, any exception turned into a FAILED: text."""
     try:
-        result = asyncio.run(asyncio.wait_for(call(), TOOL_TIMEOUT))
+        text, ok = asyncio.run(call_host_tool.call_host_tool(port, tool, args))
     except Exception as e:
         return False, f"FAILED: {type(e).__name__}: {e}"
-    return _result_ok(result)
+    return ok, text
 
 
 def call_messages(tool, args):
-    return call_host(MESSAGES_URL, tool, args)
+    return call_host(MESSAGES_PORT, tool, args)
 
 
 def call_contacts(tool, args):
-    return call_host(CONTACTS_URL, tool, args)
+    return call_host(CONTACTS_PORT, tool, args)
 
 
 def call_records(tool, args):
@@ -488,7 +457,7 @@ def _extract_text(attachment_id):
     into the inbox (the only way past chat.db's permissions), read_file —
     the PDF text layer, else Vision OCR — then delete the inbox copy. '' on
     any failure: one unreadable attachment never fails the build."""
-    ok, text = call_messages("export_attachment",
+    ok, text = call_messages("export_attachment_to_inbox",
                              {"attachment_id": attachment_id})
     if not ok:
         return ""
@@ -573,33 +542,12 @@ def _job_fields():
     """last-run stamp, whether that run failed, and the start time of a run
     going right now — from hermes' own cron files (same read as the finance
     area). Unreadable files -> None fields."""
-    try:
-        job = next((j for j in json.loads(CRON_JOBS.read_text())["jobs"]
-                    if j.get("name") == CRON_JOB), None)
-    except (OSError, ValueError, KeyError):
-        job = None
-    running = None
-    if job and job.get("id"):
-        try:
-            conn = sqlite3.connect(f"file:{CRON_EXECUTIONS}?mode=ro", uri=True,
-                                   timeout=1)
-            try:
-                row = conn.execute(
-                    "SELECT status, coalesce(started_at, claimed_at) "
-                    "FROM executions WHERE job_id = ? "
-                    "ORDER BY claimed_at DESC, id DESC LIMIT 1",
-                    (job["id"],)).fetchone()
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            row = None
-        if row and row[0] in ("claimed", "running"):
-            running = row[1]
+    job = common.cron_job(CRON_JOB)
     return {"job_last_run_at": job.get("last_run_at") if job else None,
             "job_next_run_at": job.get("next_run_at") if job else None,
             "job_last_failed": bool(job and job.get("last_status")
                                     not in (None, "ok")),
-            "job_running_since": running}
+            "job_running_since": common.job_running_since(job)}
 
 
 def scan_request(body):
@@ -616,8 +564,9 @@ def scan_request(body):
 def reset(state, body):
     """POST /api/messages/reset: clear the ledger — the scan's whole memory —
     and drop every card on the page, so the next run re-proposes whatever is
-    still in the lookback window (denied attachments included). 409 while a
-    card is executing. Caller holds LOCK."""
+    still in the lookback window (denied attachments included). The caches
+    and stamps stay: a run in flight still posts its batch against the
+    locations cache. 409 while a card is executing. Caller holds LOCK."""
     if any(c["status"] == "in_progress" for c in state["cards"]):
         return 409, {"error": "a card is executing"}
     n = len(state["ledger"])
@@ -773,55 +722,81 @@ def save_batch(state, body):
     return 200, {"ok": True, "count": len(kept)}
 
 
-def resolve(state, body):
-    """POST /api/messages/resolve: deny drops the card; approve runs
-    export + save_file in a thread. The location rides with the call and is
-    validated against the cached catalog — it is not stored card data.
-    Caller holds LOCK."""
+def deny(state, body):
+    """POST /api/messages/deny: drop the card. The ledger entry stays, so the
+    attachment is never proposed again. Caller holds LOCK."""
     attachment_id = body.get("attachment_id")
     if type(attachment_id) is not int:
         return 400, {"error": "attachment_id must be an integer"}
-    decision = body.get("decision")
-    if decision not in ("approve", "deny"):
-        return 400, {"error": "decision must be approve or deny"}
     c = _find_card(state, attachment_id)
     if c is None:
         return 404, {"error": f"unknown card {attachment_id!r}"}
     if c["status"] == "in_progress":
         return 409, {"error": "card is executing"}
-    if decision == "deny":
-        state["cards"] = [cc for cc in state["cards"] if cc is not c]
-        _log({"event": "messages_card_denied",
-              "args": {"attachment_id": attachment_id},
-              "outcome": "denied",
-              "result": f"denied in status {c['status']}"})
-        save_state(state)
-        return 200, {"ok": True}
-    if c["status"] not in ("pending", "run_failed"):
-        return 409, {"error": f"card {attachment_id} is {c['status']}"}
+    state["cards"] = [cc for cc in state["cards"] if cc is not c]
+    _log({"event": "messages_card_denied",
+          "args": {"attachment_id": attachment_id},
+          "outcome": "denied",
+          "result": f"denied in status {c['status']}"})
+    save_state(state)
+    return 200, {"ok": True}
+
+
+def apply(state, body):
+    """POST /api/messages/apply: one or many items, all-or-nothing — any
+    invalid item refuses the whole call before anything is marked. Each
+    location rides with its item and is validated against the cached
+    catalog — it is not stored card data. Caller holds LOCK; the saves run
+    one after another in a single thread after in_progress is persisted."""
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        return 400, {"error": "items must be a non-empty list"}
+    # one apply at a time area-wide — the page disables the save keys while
+    # one works; this 409 is the real rule (second tab, curl)
     if any(cc["status"] == "in_progress" for cc in state["cards"]):
         return 409, {"error": "another card is executing"}
-    location_id = body.get("location_id")
-    if not isinstance(location_id, str) or not location_id.strip():
-        return 400, {"error": "location_id is required"}
-    location_id = location_id.strip()
     labels = {l["id"]: l["label"] for l in state["locations"]}
     if not labels:
         return 503, {"error": "no records catalog yet — run a scan first"}
-    if location_id not in labels:
-        return 400, {"error": f"unknown location_id {location_id!r}"}
-    c["status"] = "in_progress"
-    c["status_text"] = "working"
+    work, cards = [], []
+    for item in items:
+        if not isinstance(item, dict):
+            return 400, {"error": "each item must be an object"}
+        attachment_id = item.get("attachment_id")
+        if type(attachment_id) is not int:
+            return 400, {"error": "attachment_id must be an integer"}
+        c = _find_card(state, attachment_id)
+        if c is None:
+            return 404, {"error": f"unknown card {attachment_id!r}"}
+        if c in cards:
+            return 400, {"error": "duplicate attachment_id in the items"}
+        if c["status"] not in ("pending", "run_failed"):
+            return 409, {"error": f"card {attachment_id} is {c['status']}"}
+        location_id = item.get("location_id")
+        if not isinstance(location_id, str) or not location_id.strip():
+            return 400, {"error": "location_id is required"}
+        location_id = location_id.strip()
+        if location_id not in labels:
+            return 400, {"error": f"unknown location_id {location_id!r}"}
+        work.append((attachment_id, location_id))
+        cards.append(c)
+    for c in cards:
+        c["status"] = "in_progress"
+        c["status_text"] = "working"
     save_state(state)
-    _spawn(attachment_id, location_id)
-    return 202, {"ok": True}
+    _spawn(work)
+    return 202, {"ok": True, "count": len(work)}
 
 
-def _spawn(attachment_id, location_id):
-    """One approved card's execution thread — module-level so tests can run
-    executions synchronously."""
-    threading.Thread(target=_execute, args=(attachment_id, location_id),
-                     daemon=True).start()
+def _spawn(work):
+    """The approved cards' execution thread, one card after another —
+    module-level so tests can run executions synchronously."""
+    threading.Thread(target=_run, args=(work,), daemon=True).start()
+
+
+def _run(work):
+    for attachment_id, location_id in work:
+        _execute(attachment_id, location_id)
 
 
 def _execute(attachment_id, location_id):
@@ -831,7 +806,7 @@ def _execute(attachment_id, location_id):
     assumed); a failed save deletes the orphaned inbox copy so the retry
     starts clean."""
     outcome, text = "run_failed", ""
-    ok, text = call_messages("export_attachment",
+    ok, text = call_messages("export_attachment_to_inbox",
                              {"attachment_id": attachment_id})
     if ok:
         m = EXPORT_RE.search(text)
@@ -946,14 +921,20 @@ def _h_batch(body):
         return save_batch(STATE, body)
 
 
-def _h_resolve(body):
+def _h_deny(body):
     with LOCK:
-        return resolve(STATE, body)
+        return deny(STATE, body)
+
+
+def _h_apply(body):
+    with LOCK:
+        return apply(STATE, body)
 
 
 HANDLERS = {"/api/messages/candidates": _h_candidates,
             "/api/messages/batch": _h_batch,
-            "/api/messages/resolve": _h_resolve,
+            "/api/messages/deny": _h_deny,
+            "/api/messages/apply": _h_apply,
             "/api/messages/hide": _h_hide,
             "/api/messages/scan-request": _h_scan_request,
             "/api/messages/reset": _h_reset}

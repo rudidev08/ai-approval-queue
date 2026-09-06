@@ -2,9 +2,9 @@
 """Tests for services/actions/emails.py — stdlib unittest, stubbed tool layer.
 
 Every MCP call in emails.py goes through emails.call_calendar /
-emails.call_webmail; the tests patch exactly those two, plus emails._spawn
-so no execution thread ever starts — nothing here touches the live calendar
-or mailbox. Run: python3 -m pytest test_emails.py -q (from this directory),
+emails.call_reminders / emails.call_webmail; the tests patch exactly those
+three, plus emails._spawn so no execution thread ever starts — nothing here
+touches the live calendar, reminders or mailbox. Run: python3 -m pytest test_emails.py -q (from this directory),
 or python3 services/actions/test_emails.py from the repo root.
 """
 
@@ -65,7 +65,7 @@ def inbox_listing(total, entries):
     return json.dumps({"total": total, "emails": entries})
 
 
-# the run-club series, old and new, as listing entries on Aug 11
+# the Casey coaching series, old and new, as listing entries on Aug 11
 OLD = cal_entry(TITLE, "2026-08-11 16:00", "2026-08-11 17:00", "Personal",
                 "disp-old", repeats="weekly until 2026-09-29",
                 notes="Meet: https://meet.google.com/abc-defg-hij")
@@ -137,8 +137,10 @@ class ToolStub:
 
     def __init__(self):
         self.calendar_calls = []
+        self.reminders_calls = []
         self.webmail_calls = []
         self.calendar_fn = None
+        self.reminders_fn = None
         self.webmail_fn = None
 
     @staticmethod
@@ -161,6 +163,15 @@ class ToolStub:
         return "SUCCESS: stub"
 
     @staticmethod
+    def _default_reminders(tool, args):
+        if tool == "create_reminder":
+            return (f"SUCCESS: added to {args['list_name']}: {args['name']} "
+                    "— id:0123456789abcdef0123456789abcdef")
+        if tool == "search_reminders":
+            return reminder_listing([])
+        return "SUCCESS: stub"
+
+    @staticmethod
     def _default_webmail(tool, args):
         if tool == "search_mail":
             return inbox_listing(0, [])
@@ -177,6 +188,12 @@ class ToolStub:
         text = fn(tool, args)
         return self._ok(text), text
 
+    def reminders(self, tool, args):
+        self.reminders_calls.append((tool, dict(args)))
+        fn = self.reminders_fn or self._default_reminders
+        text = fn(tool, args)
+        return self._ok(text), text
+
     def webmail(self, tool, args, timeout=None):
         self.webmail_calls.append((tool, dict(args)))
         fn = self.webmail_fn or self._default_webmail
@@ -187,8 +204,10 @@ class ToolStub:
 class ActionsInboxTest(unittest.TestCase):
     def setUp(self):
         self.stub = ToolStub()
-        self._saved = (emails.call_calendar, emails.call_webmail, emails._spawn)
+        self._saved = (emails.call_calendar, emails.call_reminders,
+                       emails.call_webmail, emails._spawn)
         emails.call_calendar = self.stub.calendar
+        emails.call_reminders = self.stub.reminders
         emails.call_webmail = self.stub.webmail
         # never a real execution thread: _spawn records by default, and a
         # test that wants the row to execute installs spawn_inline instead
@@ -196,7 +215,8 @@ class ActionsInboxTest(unittest.TestCase):
         emails._spawn = self._record_spawn
 
     def tearDown(self):
-        emails.call_calendar, emails.call_webmail, emails._spawn = self._saved
+        (emails.call_calendar, emails.call_reminders, emails.call_webmail,
+         emails._spawn) = self._saved
 
     def _record_spawn(self, set_id, row_id):
         self.spawns.append((set_id, row_id))
@@ -302,9 +322,9 @@ class TestParsing(ActionsInboxTest):
     def test_em_dashes_and_brackets_survive(self):
         """JSON carries any ' — ' or '<...>' in a display name or a subject
         verbatim."""
-        e = self._one_entry("Casey — Run Club <casey@example.org>",
+        e = self._one_entry("Casey — Coaching <casey@example.org>",
                             "Your order <12345> — shipped")
-        self.assertEqual(e["from"], "Casey — Run Club <casey@example.org>")
+        self.assertEqual(e["from"], "Casey — Coaching <casey@example.org>")
         self.assertEqual(e["subject"], "Your order <12345> — shipped")
 
 
@@ -408,6 +428,17 @@ class TestSelectorResolution(ActionsInboxTest):
         self.stub.calendar_fn = self.cal_listing_fn(cal_listing("2026-08-11", [entity]))
         status, _ = emails.execute_row(row("delete_event", args))
         self.assertEqual(status, "success")
+
+    def test_title_mismatch_is_not_a_hit(self):
+        """An event at the exact calendar and start, but a genuinely
+        different title (no entity decoding involved), is not a match —
+        title is a real AND condition, not one an entry can substitute
+        calendar/start for."""
+        other = cal_entry("Completely Different Meeting", "2026-08-11 16:00",
+                          "2026-08-11 17:00", "Personal", "disp-other")
+        self.stub.calendar_fn = self.cal_listing_fn(cal_listing("2026-08-11", [other]))
+        self.assertEqual(
+            emails._resolve("Personal", TITLE, "2026-08-11 16:00"), [])
 
 
 # ---------------------------------------------------------------- update verify
@@ -1132,17 +1163,43 @@ class TestScan(StateDirTest):
         self.assertEqual(d["emails"][0]["id"], "E00")  # the newest 50, the rest stay new
 
     def test_body_cap_favors_date_link_lines(self):
+        """_cap_body still hoists date and link lines — it is what injected mail
+        and a finance-review chain get."""
         filler = "just some prose without anything worth keeping\n" * 200
         body = filler + "Meeting on 2026-08-11 at 16:00\nMeet: https://meet.google.com/abc-defg-hij\n"
-        pages = {0: inbox_listing(1, inbox_entries(["C"]))}
-        self.webmail_for_scan(pages, {"C": get_email_text("2026-08-05T18:00:00Z", body)})
-        code, d = emails.scan(emails.empty_state())
-        capped = d["emails"][0]["body"]
-        self.assertEqual(code, 200)
+        capped = emails._cap_body(body)
         self.assertIn("https://meet.google.com/abc-defg-hij", capped)
         self.assertIn("2026-08-11", capped)
         self.assertIn("[body capped", capped)
         self.assertLess(len(capped), 4300)
+
+    def test_an_ordinary_email_comes_back_as_a_snippet(self):
+        """The whole payload has to fit hermes' MCP result cap, so the scan
+        hands over the opening of the body and read_email widens it."""
+        body = ("Hi Alex, here is a long note.\n"
+                + "just some prose without anything worth keeping\n" * 200)
+        pages = {0: inbox_listing(1, inbox_entries(["C"]))}
+        self.webmail_for_scan(pages, {"C": get_email_text("2026-08-05T18:00:00Z", body)})
+        code, d = emails.scan(emails.empty_state())
+        got = d["emails"][0]["body"]
+        self.assertEqual(code, 200)
+        self.assertTrue(got.startswith("Hi Alex, here is a long note."))
+        self.assertIn("[snippet — call read_email", got)
+        self.assertLess(len(got), emails.SNIPPET_CAP + 100)
+
+    def test_fifty_emails_stay_well_under_the_mcp_result_cap(self):
+        """The failure this shape exists to prevent: a scan over hermes' 50,000
+        character cap is spilled to a file the cron agent has no tool to open,
+        and the whole batch is lost."""
+        body = "some prose that goes on and on and on\n" * 200
+        ids = [f"E{i:02d}" for i in range(60)]
+        pages = {0: inbox_listing(60, inbox_entries(ids))}
+        self.webmail_for_scan(
+            pages, {i: get_email_text("2026-08-05T18:00:00Z", body) for i in ids})
+        code, d = emails.scan(emails.empty_state())
+        self.assertEqual(code, 200)
+        self.assertEqual(len(d["emails"]), emails.NEW_CAP)
+        self.assertLess(sum(len(e["body"]) for e in d["emails"]), 30_000)
 
     # the fixed-format event lines the webmail tool's _fmt_ics_event writes
     ICS_C = (emails.ICS_HEADER + "\n"
@@ -1162,7 +1219,7 @@ class TestScan(StateDirTest):
         code, d = emails.scan(emails.empty_state())
         got = d["emails"][0]["body"]
         self.assertEqual(code, 200)
-        self.assertIn("[body capped", got)
+        self.assertIn("[snippet — call read_email", got)
         self.assertIn("uid=old@google.com", got)
         self.assertTrue(got.endswith("status CANCELLED"))
 
@@ -1195,13 +1252,13 @@ class TestScan(StateDirTest):
         entries = [
             mail_entry("2026-08-05T10:00", "Iris <iris@example.org>",
                        "Finance digest", "IR"),
-            mail_entry("2026-08-05T11:00", "the user <me@example.org>",
+            mail_entry("2026-08-05T11:00", "Alex <me@example.org>",
                        "Re: Finance digest", "RE"),
             mail_entry("2026-08-05T12:00", "Sender <s@example.org>", "Real mail", "C"),
         ]
         pages = {0: inbox_listing(3, entries)}
         gets = {
-            "RE": (f"{MAIL_BEGIN}\nFrom: the user <me@example.org>\n"
+            "RE": (f"{MAIL_BEGIN}\nFrom: Alex <me@example.org>\n"
                    f"To: Iris <iris@example.org>\nDate: 2026-08-05T11:00:00Z\n"
                    f"Subject: Re: Finance digest\n\nmy reply\n{MAIL_END}"),
             "C": get_email_text("2026-08-05T12:00:00Z", "body of C"),
@@ -1269,6 +1326,39 @@ class TestScan(StateDirTest):
         self.assertEqual(len([c for c in calls if c[0] == "search_mail"]), 2)
 
 
+class TestListingCache(StateDirTest):
+    """state["listing"]: the scan-stamped facts save_set stamps members from."""
+
+    def test_scan_caches_listing_facts(self):
+        pages = {0: inbox_listing(2, inbox_entries(["C", "D"]))}
+        gets = {eid: get_email_text("2026-08-05T18:00:00Z", "x")
+                for eid in ("C", "D")}
+        self.webmail_for_scan(pages, gets)
+        state = emails.empty_state()
+        code, _ = emails.scan(state)
+        self.assertEqual(code, 200)
+        self.assertEqual(state["listing"]["C"],
+                         {"subject": "Subject C", "from": "Sender0 <s0@example.org>",
+                          "receivedAt": "2026-08-01T10:00"})
+        self.assertIn("D", state["listing"])
+
+    def test_incomplete_listing_keeps_cached_facts(self):
+        """An empty (not provably complete) listing merges nothing away."""
+        self.webmail_for_scan({0: inbox_listing(0, [])}, {})
+        state = emails.empty_state()
+        state["listing"]["OLD"] = {"subject": "s", "from": "f",
+                                   "receivedAt": "r"}
+        code, _ = emails.scan(state)
+        self.assertEqual(code, 200)
+        self.assertEqual(state["listing"]["OLD"]["subject"], "s")
+
+    def test_load_state_backfills_listing(self):
+        state = emails.empty_state()
+        del state["listing"]
+        emails.STATE_FILE.write_text(json.dumps(state))
+        self.assertEqual(emails.load_state()["listing"], {})
+
+
 class TestTrim(StateDirTest):
     def test_complete_listing_trims(self):
         state = emails.empty_state()
@@ -1296,11 +1386,14 @@ class TestTrim(StateDirTest):
             {"email_ids": ["GONE_P"],
              "args_sha256": "c", "denied_at": "x"},                       # pending set's -> stays
         ]
+        state["listing"] = {"GONE": {"subject": "s", "from": "f",
+                                     "receivedAt": "r"}}
         pages = {0: inbox_listing(1, inbox_entries(["IN"]))}
         self.webmail_for_scan(pages, {})
         code, _ = emails.scan(state)
         self.assertEqual(code, 200)
         self.assertEqual(sorted(state["ledger"]), ["IN"])
+        self.assertEqual(sorted(state["listing"]), ["IN"])  # stale id pruned
         self.assertEqual([d["args_sha256"] for d in state["denials"]], ["b", "c"])
         self.assertEqual(sorted(state["sets"]), ["set_ip", "set_p", "set_s"])  # set_r dropped
         self.assertEqual(state["sets"]["set_p"]["state"], "pending")
@@ -1334,26 +1427,34 @@ class TestTrim(StateDirTest):
 # ---------------------------------------------------------------- save_set
 
 def save_body(email_ids, rows, **kw):
-    emails = [{"id": i, "subject": f"Subject {i}", "from": f"S <{i}@example.org>",
-               "receivedAt": "2026-08-05T18:00:00Z"} for i in email_ids]
     body = {"title": "t", "rationale": "r",
-            "emails": emails, "rows": rows, "supersedes": [], "kind": "action"}
+            "emails": list(email_ids), "rows": rows, "supersedes": [],
+            "kind": "action"}
     body.update(kw)
     return body
+
+
+def listed_state(*email_ids):
+    """empty_state with the scan's listing cache seeded — save_set stamps
+    member facts from it and rejects ids it does not hold."""
+    state = emails.empty_state()
+    for i in email_ids or ("E1", "E2", "E9"):
+        state["listing"][i] = {"subject": f"Subject {i}",
+                               "from": f"S <{i}@example.org>",
+                               "receivedAt": "2026-08-05T18:00:00Z"}
+    return state
 
 
 CREATE_ROW = {"kind": "create_event", "label": "create",
               "args": {"calendar": "Personal", "title": "T", "start": "2026-08-20 16:00",
                        "end": "2026-08-20 17:00"}}
 ARCHIVE_ROW = {"kind": "archive_email", "label": "archive",
-               "args": {"emails": [{"id": "E1", "subject": "Subject E1",
-                                    "from": "S <E1@example.org>",
-                                    "receivedAt": "2026-08-05T18:00:00Z"}]}}
+               "args": {"emails": ["E1"]}}
 
 
 class TestSaveSet(StateDirTest):
     def test_happy_path(self):
-        state = emails.empty_state()
+        state = listed_state()
         body = save_body(["E1"], [dict(CREATE_ROW), dict(ARCHIVE_ROW)])
         code, d = emails.save_set(state, body)
         self.assertEqual(code, 200)
@@ -1368,7 +1469,7 @@ class TestSaveSet(StateDirTest):
         self.assertEqual(events[-1]["email_ids"], ["E1"])
 
     def test_auto_and_explicit_supersede(self):
-        state = emails.empty_state()
+        state = listed_state()
         old1 = dict(set_with_row(row("delete_event", dict(DEL_ARGS))),
                     id="set_old1", email_ids=["E1"], state="pending")
         old2 = dict(set_with_row(row("delete_event", dict(DEL_ARGS))),
@@ -1384,7 +1485,7 @@ class TestSaveSet(StateDirTest):
         self.assertEqual(sorted(e["set_id"] for e in events), ["set_old1", "set_old2"])
 
     def test_validation_400s(self):
-        state = emails.empty_state()
+        state = listed_state()
         old = dict(set_with_row(row("delete_event", dict(DEL_ARGS))),
                    id="set_done", email_ids=["E1"], state="resolved")
         state["sets"] = {"set_done": old}
@@ -1405,7 +1506,7 @@ class TestSaveSet(StateDirTest):
         self.assertEqual(old["state"], "resolved")
 
     def test_ignore(self):
-        state = emails.empty_state()
+        state = listed_state()
         code, d = emails.save_set(state, save_body(["E1", "E2"], [], kind="ignore"))
         self.assertEqual(code, 200)
         self.assertEqual(d, {"ignored": 2})
@@ -1416,7 +1517,7 @@ class TestSaveSet(StateDirTest):
         self.assertEqual(events[-1].get("kind"), "ignore")
 
     def test_deny_guard(self):
-        state = emails.empty_state()
+        state = listed_state()
         code, d1 = emails.save_set(state, save_body(["E1"], [dict(CREATE_ROW)]))
         self.assertEqual(code, 200)
         sha = state["sets"][d1["set_id"]]["rows"][0]["args_sha256"]
@@ -1441,7 +1542,7 @@ class TestSaveSet(StateDirTest):
         self.assertEqual(state["sets"][d5["set_id"]]["rows"][0]["status"], "pending")
 
     def test_supersede_clears_old_member_ledger(self):
-        state = emails.empty_state()
+        state = listed_state()
         old = dict(set_with_row(row("delete_event", dict(DEL_ARGS))),
                    id="set_old", email_ids=["E1", "E2"], state="pending")
         state["sets"] = {"set_old": old}
@@ -1454,7 +1555,7 @@ class TestSaveSet(StateDirTest):
         self.assertEqual(state["ledger"]["E1"]["set_id"], d["set_id"])
 
     def test_ignore_supersedes_and_clears(self):
-        state = emails.empty_state()
+        state = listed_state()
         old = dict(set_with_row(row("delete_event", dict(DEL_ARGS))),
                    id="set_old", email_ids=["E1"], state="pending")
         state["sets"] = {"set_old": old}
@@ -1465,14 +1566,14 @@ class TestSaveSet(StateDirTest):
         self.assertEqual(state["ledger"]["E1"]["state"], "ignored")
 
     def test_bad_int_returns_400(self):
-        state = emails.empty_state()
+        state = listed_state()
         bad = dict(CREATE_ROW, args=dict(CREATE_ROW["args"], repeat="weekly",
                                          repeat_interval="abc"))
         code, _ = emails.save_set(state, save_body(["E1"], [bad]))
         self.assertEqual(code, 400)
 
     def test_emails_validation(self):
-        state = emails.empty_state()
+        state = listed_state()
         body = save_body(["E1"], [dict(CREATE_ROW)])
         body["emails"] = body["emails"] * 2  # the same id twice
         code, _ = emails.save_set(state, body)
@@ -1483,12 +1584,59 @@ class TestSaveSet(StateDirTest):
         self.assertEqual(code, 400)
         self.assertEqual(state["sets"], {})
 
+    def test_member_facts_stamped_from_listing(self):
+        state = listed_state()
+        code, d = emails.save_set(state, save_body(["E1"], [dict(ARCHIVE_ROW)]))
+        self.assertEqual(code, 200)
+        s = state["sets"][d["set_id"]]
+        m = {"id": "E1", "subject": "Subject E1", "from": "S <E1@example.org>",
+             "receivedAt": "2026-08-05T18:00:00Z"}
+        self.assertEqual(s["emails"], [m])
+        self.assertEqual(s["rows"][0]["args"]["emails"], [m])
+
+    def test_unknown_email_id_400(self):
+        code, d = emails.save_set(listed_state(),
+                                  save_body(["EX"], [dict(CREATE_ROW)]))
+        self.assertEqual(code, 400)
+        self.assertIn("EX", d["error"])
+
+    def test_archive_row_rejects_non_member_and_non_id_shapes(self):
+        outside = dict(ARCHIVE_ROW, args={"emails": ["E2"]})  # listed, not a member
+        code, _ = emails.save_set(listed_state(), save_body(["E1"], [outside]))
+        self.assertEqual(code, 400)
+        dicts = dict(ARCHIVE_ROW, args={"emails": [{"id": "E1"}]})  # dicts, not ids
+        code, _ = emails.save_set(listed_state(), save_body(["E1"], [dicts]))
+        self.assertEqual(code, 400)
+
+    def test_save_does_not_mutate_the_caller_args(self):
+        r = {"kind": "archive_email", "label": "a", "args": {"emails": ["E1"]}}
+        code, _ = emails.save_set(listed_state(), save_body(["E1"], [r]))
+        self.assertEqual(code, 200)
+        self.assertEqual(r["args"]["emails"], ["E1"])  # ids, not stamped dicts
+
+    def test_emails_as_dicts_rejected(self):
+        body = save_body(["E1"], [dict(CREATE_ROW)])
+        body["emails"] = [{"id": "E1"}]  # the old shape
+        code, _ = emails.save_set(listed_state(), body)
+        self.assertEqual(code, 400)
+
+    def test_open_email_row_stamped_and_member_bound(self):
+        r = {"kind": "open_email", "label": "o", "args": {"email": "E1"}}
+        state = listed_state()
+        code, d = emails.save_set(state, save_body(["E1"], [r]))
+        self.assertEqual(code, 200)
+        stamped = state["sets"][d["set_id"]]["rows"][0]["args"]["email"]
+        self.assertEqual(stamped["subject"], "Subject E1")
+        outside = {"kind": "open_email", "label": "o", "args": {"email": "E2"}}
+        code, _ = emails.save_set(listed_state(), save_body(["E1"], [outside]))
+        self.assertEqual(code, 400)
+
     def test_series_stored_and_returned(self):
         series = {"repeat": "weekly", "repeat_until": "2026-10-27",
                   "occurrences": 12}
         srow = {"kind": "delete_event", "label": "d", "args": dict(DEL_ARGS),
                 "series": series}
-        state = emails.empty_state()
+        state = listed_state()
         code, d = emails.save_set(state, save_body(["E1"], [srow]))
         self.assertEqual(code, 200)
         r = state["sets"][d["set_id"]]["rows"][0]
@@ -1497,7 +1645,7 @@ class TestSaveSet(StateDirTest):
         # series is display data outside args — it must not move args_sha256,
         # and a row without one carries no series key in its view
         bare = {"kind": "delete_event", "label": "d", "args": dict(DEL_ARGS)}
-        state2 = emails.empty_state()
+        state2 = listed_state()
         code, d2 = emails.save_set(state2, save_body(["E1"], [bare]))
         self.assertEqual(code, 200)
         r2 = state2["sets"][d2["set_id"]]["rows"][0]
@@ -1516,13 +1664,13 @@ class TestSaveSet(StateDirTest):
             dict(CREATE_ROW, series={"repeat": "weekly"}),             # wrong kind
         ]
         for r in cases:
-            code, _ = emails.save_set(emails.empty_state(), save_body(["E1"], [r]))
+            code, _ = emails.save_set(listed_state(), save_body(["E1"], [r]))
             self.assertEqual(code, 400, r)
 
     def test_suggestion_stored_and_returned(self):
         note = "Tuesday, nothing on Personal"
         srow = dict(CREATE_ROW, suggestion=note)
-        state = emails.empty_state()
+        state = listed_state()
         code, d = emails.save_set(state, save_body(["E1"], [srow]))
         self.assertEqual(code, 200)
         r = state["sets"][d["set_id"]]["rows"][0]
@@ -1530,7 +1678,7 @@ class TestSaveSet(StateDirTest):
         self.assertEqual(emails._row_view(r)["suggestion"], note)
         # suggestion is display data outside args — it must not move
         # args_sha256, and a row without one carries no suggestion key
-        state2 = emails.empty_state()
+        state2 = listed_state()
         code, d2 = emails.save_set(state2, save_body(["E1"], [dict(CREATE_ROW)]))
         self.assertEqual(code, 200)
         r2 = state2["sets"][d2["set_id"]]["rows"][0]
@@ -1548,7 +1696,7 @@ class TestSaveSet(StateDirTest):
              "suggestion": "x"},                                   # wrong kind
         ]
         for r in cases:
-            code, _ = emails.save_set(emails.empty_state(), save_body(["E1"], [r]))
+            code, _ = emails.save_set(listed_state(), save_body(["E1"], [r]))
             self.assertEqual(code, 400, r)
 
 
@@ -1611,6 +1759,9 @@ class TestReset(StateDirTest):
         state["ledger"] = {"E1": {"state": "in_set", "set_id": "s1", "first_seen": "x"}}
         state["denials"] = [{"email_ids": ["E2"],
                              "args_sha256": "a", "denied_at": "x"}]
+        state["listing"] = {"E1": {"subject": "s", "from": "f", "receivedAt": "x"}}
+        state["last_inbox_ids"] = ["E1", "E2"]
+        state["intents"] = {"I1": {"category": "general"}}
         code, d = emails.reset(state, {"all": True})
         # the count is the pending sets voided; every record goes, pending
         # or not, so a re-run starts from a blank state file
@@ -1618,9 +1769,14 @@ class TestReset(StateDirTest):
         self.assertEqual(state["sets"], {})
         self.assertEqual(state["ledger"], {})
         self.assertEqual(state["denials"], [])
-        # the stamp tracks scan-loop health, not the wiped records
+        # the stamps track scan-loop health, not the wiped records; the
+        # listing stays so a run in flight can still save its sets
         self.assertEqual(state["last_scan_at"], "2026-08-08T22:00:00Z")
         self.assertEqual(state["last_scan_status"], "ok")
+        self.assertEqual(state["listing"],
+                         {"E1": {"subject": "s", "from": "f", "receivedAt": "x"}})
+        self.assertEqual(state["last_inbox_ids"], ["E1", "E2"])
+        self.assertEqual(state["intents"], {"I1": {"category": "general"}})
 
 
 class TestJobLastRun(StateDirTest):
@@ -1633,32 +1789,32 @@ class TestJobLastRun(StateDirTest):
 
     def setUp(self):
         super().setUp()
-        self._saved_jobs = emails.CRON_JOBS
+        self._saved_jobs = common.CRON_JOBS
 
     def tearDown(self):
-        emails.CRON_JOBS = self._saved_jobs
+        common.CRON_JOBS = self._saved_jobs
         super().tearDown()
 
     def test_reads_the_named_job(self):
-        emails.CRON_JOBS = self._jobs({"jobs": [
+        common.CRON_JOBS = self._jobs({"jobs": [
             {"name": "other", "last_run_at": "2020-01-01T00:00:00-08:00"},
             {"name": "actions-inbox-scan", "last_run_at": "2026-08-08T16:36:07-07:00"}]})
-        self.assertEqual(emails._job_record()["last_run_at"],
+        self.assertEqual(common.cron_job(emails.CRON_JOB)["last_run_at"],
                          "2026-08-08T16:36:07-07:00")
 
     def test_unknown_job_is_none(self):
-        emails.CRON_JOBS = self._jobs({"jobs": [{"name": "other"}]})
-        self.assertIsNone(emails._job_record())
+        common.CRON_JOBS = self._jobs({"jobs": [{"name": "other"}]})
+        self.assertIsNone(common.cron_job(emails.CRON_JOB))
 
     def test_missing_file_is_none(self):
-        emails.CRON_JOBS = common.STATE_DIR / "nope.json"
-        self.assertIsNone(emails._job_record())
+        common.CRON_JOBS = common.STATE_DIR / "nope.json"
+        self.assertIsNone(common.cron_job(emails.CRON_JOB))
 
     def test_unreadable_file_is_none(self):
         path = common.STATE_DIR / "jobs.json"
         path.write_text("{not json")
-        emails.CRON_JOBS = path
-        self.assertIsNone(emails._job_record())
+        common.CRON_JOBS = path
+        self.assertIsNone(common.cron_job(emails.CRON_JOB))
 
 
 class TestJobRunningSince(StateDirTest):
@@ -1678,47 +1834,47 @@ class TestJobRunningSince(StateDirTest):
 
     def setUp(self):
         super().setUp()
-        self._saved_db = emails.CRON_EXECUTIONS
+        self._saved_db = common.CRON_EXECUTIONS
 
     def tearDown(self):
-        emails.CRON_EXECUTIONS = self._saved_db
+        common.CRON_EXECUTIONS = self._saved_db
         super().tearDown()
 
     def test_newest_running_row_wins(self):
-        emails.CRON_EXECUTIONS = self._db([
+        common.CRON_EXECUTIONS = self._db([
             ("e1", "j1", "completed",
              "2026-08-08T10:00:00-07:00", "2026-08-08T10:00:01-07:00"),
             ("e2", "j1", "running",
              "2026-08-08T11:00:00-07:00", "2026-08-08T11:00:01-07:00")])
-        self.assertEqual(emails._job_running_since(self.JOB),
+        self.assertEqual(common.job_running_since(self.JOB),
                          "2026-08-08T11:00:01-07:00")
 
     def test_claimed_counts_and_falls_back_to_claimed_at(self):
-        emails.CRON_EXECUTIONS = self._db([
+        common.CRON_EXECUTIONS = self._db([
             ("e1", "j1", "claimed", "2026-08-08T11:00:00-07:00", None)])
-        self.assertEqual(emails._job_running_since(self.JOB),
+        self.assertEqual(common.job_running_since(self.JOB),
                          "2026-08-08T11:00:00-07:00")
 
     def test_newest_terminal_row_means_not_running(self):
-        emails.CRON_EXECUTIONS = self._db([
+        common.CRON_EXECUTIONS = self._db([
             ("e1", "j1", "running",
              "2026-08-08T10:00:00-07:00", "2026-08-08T10:00:01-07:00"),
             ("e2", "j1", "completed",
              "2026-08-08T11:00:00-07:00", "2026-08-08T11:00:01-07:00")])
-        self.assertIsNone(emails._job_running_since(self.JOB))
+        self.assertIsNone(common.job_running_since(self.JOB))
 
     def test_other_jobs_run_does_not_count(self):
-        emails.CRON_EXECUTIONS = self._db([
+        common.CRON_EXECUTIONS = self._db([
             ("e1", "j2", "running",
              "2026-08-08T11:00:00-07:00", "2026-08-08T11:00:01-07:00")])
-        self.assertIsNone(emails._job_running_since(self.JOB))
+        self.assertIsNone(common.job_running_since(self.JOB))
 
     def test_missing_db_is_none(self):
-        emails.CRON_EXECUTIONS = common.STATE_DIR / "nope.db"
-        self.assertIsNone(emails._job_running_since(self.JOB))
+        common.CRON_EXECUTIONS = common.STATE_DIR / "nope.db"
+        self.assertIsNone(common.job_running_since(self.JOB))
 
     def test_missing_job_is_none(self):
-        self.assertIsNone(emails._job_running_since(None))
+        self.assertIsNone(common.job_running_since(None))
 
 
 class TestBatchCounter(StateDirTest):
@@ -1727,12 +1883,12 @@ class TestBatchCounter(StateDirTest):
     def setUp(self):
         super().setUp()
         self._saved_batch = emails.SCAN_BATCH
-        self._saved_jobs = emails.CRON_JOBS
-        emails.CRON_JOBS = common.STATE_DIR / "nope.json"
+        self._saved_jobs = common.CRON_JOBS
+        common.CRON_JOBS = common.STATE_DIR / "nope.json"
 
     def tearDown(self):
         emails.SCAN_BATCH = self._saved_batch
-        emails.CRON_JOBS = self._saved_jobs
+        common.CRON_JOBS = self._saved_jobs
         super().tearDown()
 
     def test_counts_only_batch_ids_in_ledger(self):
@@ -1756,11 +1912,11 @@ class TestPageStateSets(StateDirTest):
 
     def setUp(self):
         super().setUp()
-        self._saved_jobs = emails.CRON_JOBS
-        emails.CRON_JOBS = common.STATE_DIR / "nope.json"
+        self._saved_jobs = common.CRON_JOBS
+        common.CRON_JOBS = common.STATE_DIR / "nope.json"
 
     def tearDown(self):
-        emails.CRON_JOBS = self._saved_jobs
+        common.CRON_JOBS = self._saved_jobs
         super().tearDown()
 
     @staticmethod
@@ -1802,6 +1958,7 @@ class TestPageStateSets(StateDirTest):
         state = emails.empty_state()
         fresh = self._set("s_fresh", state="resolved", resolved_at=self._stamp(3))
         pending = self._set("s_pend")
+        pending["rows"][0]["status"] = "pending"
         state["sets"] = {x["id"]: x for x in (fresh, pending)}
         code, out = emails.hide(state, {"all": True})
         self.assertEqual((code, out), (200, {"hidden": 1}))
@@ -1810,11 +1967,54 @@ class TestPageStateSets(StateDirTest):
         self.assertEqual([v["id"] for v in emails.page_state(state)["sets"]],
                          ["s_pend"])
 
-    def test_hide_pending_409(self):
+    def test_hide_waiting_or_running_409(self):
+        for status in ("pending", "in_progress"):
+            state = emails.empty_state()
+            s = self._set("s1")
+            s["rows"][0]["status"] = status
+            state["sets"] = {"s1": s}
+            code, _ = emails.hide(state, {"set_id": "s1"})
+            self.assertEqual(code, 409, status)
+
+    def test_hide_stuck_set_settles_it(self):
         state = emails.empty_state()
-        state["sets"] = {"s1": self._set("s1")}
-        code, _ = emails.hide(state, {"set_id": "s1"})
-        self.assertEqual(code, 409)
+        s = self._set("s1")
+        s["rows"][0]["status"] = "precheck_failed"
+        state["sets"] = {"s1": s}
+        code, out = emails.hide(state, {"set_id": "s1"})
+        self.assertEqual((code, out), (200, {"hidden": 1}))
+        self.assertEqual(s["state"], "resolved")
+        self.assertTrue(s["resolved_at"])
+        self.assertTrue(s["hidden"])
+        self.assertEqual(emails.page_state(state)["sets"], [])
+
+    def test_hide_again_is_a_noop_and_superseded_409(self):
+        state = emails.empty_state()
+        s = self._set("s1", state="resolved", resolved_at=self._stamp(1))
+        state["sets"] = {"s1": s}
+        emails.hide(state, {"set_id": "s1"})
+        code, out = emails.hide(state, {"set_id": "s1"})
+        self.assertEqual((code, out), (200, {"hidden": 0}))
+        state["sets"]["s2"] = self._set("s2", state="superseded")
+        self.assertEqual(emails.hide(state, {"set_id": "s2"})[0], 409)
+
+    def test_hide_all_leaves_stuck_sets_alone(self):
+        # a stuck set still needs Alex's choice (retry or accept), so the
+        # done section's clear never settles one
+        state = emails.empty_state()
+        stuck = self._set("s_stuck")
+        stuck["rows"][0]["status"] = "run_failed"
+        waiting = self._set("s_wait")
+        waiting["rows"][0]["status"] = "pending"
+        running = self._set("s_run")
+        running["rows"][0]["status"] = "in_progress"
+        state["sets"] = {x["id"]: x for x in (stuck, waiting, running)}
+        code, out = emails.hide(state, {"all": True})
+        self.assertEqual((code, out), (200, {"hidden": 0}))
+        self.assertNotIn("hidden", stuck)
+        self.assertEqual(stuck["state"], "pending")
+        self.assertNotIn("hidden", waiting)
+        self.assertNotIn("hidden", running)
 
     def test_hide_unknown_404_and_no_selector_400(self):
         state = emails.empty_state()
@@ -1823,7 +2023,9 @@ class TestPageStateSets(StateDirTest):
 
 
 class TestReadBody(ActionsInboxTest):
-    """GET /api/emails/body: the member email's text, read live."""
+    """GET /api/emails/body: one email's text, read live. The id is the whole
+    lookup — the scan listing while the mail is in the inbox, else any set that
+    holds it (the page expands archived members too)."""
 
     def setUp(self):
         super().setUp()
@@ -1845,7 +2047,7 @@ class TestReadBody(ActionsInboxTest):
     def test_the_text_comes_back_unfenced(self):
         self.stub.webmail_fn = lambda tool, args: get_email_text(
             "2026-08-05T18:07:00Z", "the whole body", subject="Updated invitation")
-        code, out = self.read(set_id="s1", email_id="M1")
+        code, out = self.read(email_id="M1")
         self.assertEqual(code, 200)
         self.assertIn("the whole body", out["text"])
         self.assertIn("From: a <a@example.org>", out["text"])
@@ -1862,7 +2064,7 @@ class TestReadBody(ActionsInboxTest):
             return get_email_text("2026-08-05T18:07:00Z", "found after all")
 
         self.stub.webmail_fn = fn
-        code, out = self.read(set_id="s1", email_id="M1")
+        code, out = self.read(email_id="M1")
         self.assertEqual(code, 200)
         self.assertIn("found after all", out["text"])
         self.assertEqual([t for t, _ in self.stub.webmail_calls],
@@ -1877,7 +2079,7 @@ class TestReadBody(ActionsInboxTest):
             return "FAILED: unknown id — the server restarted"
 
         self.stub.webmail_fn = fn
-        code, out = self.read(set_id="s1", email_id="M1")
+        code, out = self.read(email_id="M1")
         self.assertEqual(code, 502)
         self.assertIn("unknown id", out["error"])
         self.assertEqual([t for t, _ in self.stub.webmail_calls],
@@ -1888,14 +2090,24 @@ class TestReadBody(ActionsInboxTest):
             raise emails.WebmailError("webmail child did not come up")
 
         self.stub.webmail_fn = boom
-        code, out = self.read(set_id="s1", email_id="M1")
+        code, out = self.read(email_id="M1")
         self.assertEqual(code, 502)
         self.assertIn("did not come up", out["error"])
 
-    def test_unknown_set_or_email_is_a_404(self):
-        self.assertEqual(self.read(set_id="nope", email_id="M1")[0], 404)
-        self.assertEqual(self.read(set_id="s1", email_id="M9")[0], 404)
+    def test_an_email_the_service_never_listed_is_a_404(self):
+        self.assertEqual(self.read(email_id="M9")[0], 404)
+        self.assertEqual(self.read(email_id="")[0], 404)
         self.assertEqual(self.stub.webmail_calls, [])
+
+    def test_an_id_in_the_scan_listing_needs_no_set(self):
+        emails.STATE["sets"] = {}
+        emails.STATE["listing"] = {"L1": {"subject": "Lunch", "from": "a@example.org",
+                                          "receivedAt": "2026-08-05T18:00:00Z"}}
+        self.stub.webmail_fn = lambda tool, args: get_email_text(
+            "2026-08-05T18:07:00Z", "listed, never in a set")
+        code, out = self.read(email_id="L1")
+        self.assertEqual(code, 200)
+        self.assertIn("listed, never in a set", out["text"])
 
 
 # ---------------------------------------------------------------- spawn, respawn, resolution
@@ -1940,7 +2152,7 @@ class TestResolveExecution(StateDirTest):
         self.assertEqual(events[-1]["outcome"], "done")
 
 
-class TestwebmailRespawn(unittest.TestCase):
+class TestWebmailRespawn(unittest.TestCase):
     """The child loop must not spawn processes forever when the child can never
     start, and must still respawn on demand when a started child dies."""
 
@@ -1994,7 +2206,7 @@ class TestSetResolution(ActionsInboxTest):
 
 class TestSupersedeInProgress(StateDirTest):
     def test_explicit_supersede_409_in_progress(self):
-        state = emails.empty_state()
+        state = listed_state()
         r = dict(row("delete_event", dict(DEL_ARGS)), status="in_progress")
         old = dict(set_with_row(r), id="set_old", email_ids=["E9"], state="pending")
         state["sets"] = {"set_old": old}
@@ -2006,7 +2218,7 @@ class TestSupersedeInProgress(StateDirTest):
         self.assertEqual(old["state"], "pending")
 
     def test_auto_supersede_409_in_progress(self):
-        state = emails.empty_state()
+        state = listed_state()
         r = dict(row("delete_event", dict(DEL_ARGS)), status="in_progress")
         old = dict(set_with_row(r), id="set_old", email_ids=["E1"], state="pending")
         state["sets"] = {"set_old": old}
@@ -2017,7 +2229,7 @@ class TestSupersedeInProgress(StateDirTest):
 
     def test_ignore_409_in_progress(self):
         """The ignore branch carries the same guard as the action path."""
-        state = emails.empty_state()
+        state = listed_state()
         r = dict(row("delete_event", dict(DEL_ARGS)), status="in_progress")
         old = dict(set_with_row(r), id="set_old", email_ids=["E1"], state="pending")
         state["sets"] = {"set_old": old}
@@ -2084,6 +2296,19 @@ class TestCreateNeedle(ActionsInboxTest):
         self.assertEqual((status, text), ("success", "SUCCESS: created in Partner:"))
 
 
+class TestCheckExpected(unittest.TestCase):
+    """_check_expected: containment/equality checks on a fresh listing entry
+    against the create verify / save endpoint's expected hint. Pure
+    function, no tool stubs needed."""
+
+    def test_location_mismatch(self):
+        entry = cal_entry(TITLE, "2026-08-11 16:00", "2026-08-11 17:00",
+                          "Personal", "disp-x", location="Room A")
+        self.assertEqual(
+            emails._check_expected(entry, {"location": "Room B"}),
+            "location changed")
+
+
 class TestReconcileCoexist(ActionsInboxTest):
     def test_create_coexisting_old_series_is_success(self):
         old = cal_entry(TITLE, "2026-08-04 16:00", "2026-08-04 17:00", "Personal",
@@ -2128,6 +2353,28 @@ class TestScanBudget(StateDirTest):
         self.assertEqual(sorted(d["fetch_failed"]), sorted(ids))
         self.assertEqual(d["emails"], [])  # not returned without a body
         self.assertNotIn("get_email", [t for t, _ in self.stub.webmail_calls])
+
+    def test_budget_boundary_exact_margin_still_fetches(self):
+        """At exactly BODY_BUDGET_S - 75 elapsed the check must not trip yet
+        (a strict >, and the margin is exactly 75s, not 74 or 76) — kills
+        the >= and off-by-one-second mutants on the check."""
+        calls = []
+
+        def fake_monotonic():
+            calls.append(1)
+            return 0 if len(calls) == 1 else emails.BODY_BUDGET_S - 75
+
+        pages = {0: inbox_listing(1, inbox_entries(["C"]))}
+        self.webmail_for_scan(pages, {"C": get_email_text("2026-08-05T18:00:00Z", "body")})
+        saved = emails.time.monotonic
+        emails.time.monotonic = fake_monotonic
+        try:
+            code, d = emails.scan(emails.empty_state())
+        finally:
+            emails.time.monotonic = saved
+        self.assertEqual(code, 200)
+        self.assertEqual([e["id"] for e in d["emails"]], ["C"])
+        self.assertEqual(d["fetch_failed"], [])
 
 
 # ---------------------------------------------------------------- calendar colors
@@ -2247,6 +2494,138 @@ class TestOpenEmailRow(StateDirTest):
         self.assertEqual(emails.reconcile_row(r), ("success", "marked done"))
 
 
+REMINDER_ARGS = {"name": "Send Dana the 401(k) investment options list",
+                 "list": "Next", "due": "2026-09-04",
+                 "notes": "Dana asked on Sep 1; export the list from the plan site"}
+
+
+def reminder_listing(rows, total=None):
+    """A format="json" search_reminders result: rows are (name, list) pairs,
+    all open; total defaults to the row count."""
+    return json.dumps({"total": len(rows) if total is None else total,
+                       "reminders": [{"rid": "0123456789abcdef0123456789abcdef",
+                                      "name": n, "notes": "", "done": False, "due": "",
+                                      "priority": "", "repeat": "", "done_at": "",
+                                      "list": l} for n, l in rows]})
+
+
+class TestCreateReminderRow(StateDirTest):
+    def test_valid_row_accepted(self):
+        s = set_with_row(row("create_reminder", dict(REMINDER_ARGS)))
+        emails.finalize_set(s)
+        self.assertEqual(s["rows"][0]["status"], "pending")
+
+    def test_name_and_list_only(self):
+        s = set_with_row(row("create_reminder", {"name": "Call Dana", "list": "Later"}))
+        emails.finalize_set(s)
+        self.assertEqual(s["rows"][0]["status"], "pending")
+
+    def test_rejections(self):
+        cases = [
+            (dict(REMINDER_ARGS, list="Someday"), "list must be one of"),
+            (dict(REMINDER_ARGS, list=""), "list is required"),
+            (dict(REMINDER_ARGS, name=" "), "name is required"),
+            (dict(REMINDER_ARGS, name="a\nb"), "line breaks"),
+            (dict(REMINDER_ARGS, due="2026-09-04 10:00"), "due must be a date"),
+            (dict(REMINDER_ARGS, due="soon"), "due must be a date"),
+            (dict(REMINDER_ARGS, due="2026-02-30"), "must be in range"),
+            (dict(REMINDER_ARGS, notes="x" * 201), "cap is 200"),
+            (dict(REMINDER_ARGS, priority="high"), "unknown arg keys"),
+        ]
+        for args, msg in cases:
+            with self.subTest(args=args):
+                with self.assertRaisesRegex(ValueError, msg):
+                    emails.finalize_set(set_with_row(row("create_reminder", args)))
+
+    def _approve(self, r):
+        s = set_with_rows(["E1"], [r])
+        emails.finalize_set(s)
+        state = emails.empty_state()
+        state["sets"][s["id"]] = s
+        emails._spawn = self.spawn_inline
+        saved = emails.STATE
+        emails.STATE = state
+        try:
+            code, _ = emails.resolve(state, {"set_id": s["id"], "row_id": "t1",
+                                             "decision": "approve",
+                                             "args_sha256": r["args_sha256"]})
+        finally:
+            emails.STATE = saved
+        self.assertEqual(code, 202)
+        return s
+
+    def test_approve_creates_through_host(self):
+        r = row("create_reminder", dict(REMINDER_ARGS))
+        s = self._approve(r)
+        self.assertEqual(r["status"], "success")
+        self.assertEqual(r["status_text"],
+                         "SUCCESS: added to Next: Send Dana the 401(k) investment options list")
+        self.assertEqual(s["state"], "resolved")
+        self.assertEqual(self.stub.reminders_calls, [("create_reminder", {
+            "name": REMINDER_ARGS["name"], "list_name": "Next",
+            "notes": REMINDER_ARGS["notes"], "due": "2026-09-04"})])
+        self.assertEqual(self.stub.calendar_calls, [])
+        self.assertEqual(self.stub.webmail_calls, [])
+
+    def test_optional_args_sent_empty(self):
+        r = row("create_reminder", {"name": "Call Dana", "list": "Later"})
+        self._approve(r)
+        self.assertEqual(self.stub.reminders_calls[0][1],
+                         {"name": "Call Dana", "list_name": "Later", "notes": "", "due": ""})
+
+    def test_status_text_keeps_a_name_holding_the_id_marker(self):
+        r = row("create_reminder", {"name": "Quote the part — id: 42", "list": "Next"})
+        self._approve(r)
+        self.assertEqual(r["status_text"],
+                         "SUCCESS: added to Next: Quote the part — id: 42")
+
+    def test_tool_failure_is_run_failed(self):
+        self.stub.reminders_fn = lambda tool, args: "FAILED: unknown list 'Next'"
+        r = row("create_reminder", dict(REMINDER_ARGS))
+        self._approve(r)
+        self.assertEqual(r["status"], "run_failed")
+        self.assertEqual(r["status_text"], "FAILED: unknown list 'Next'")
+
+    def test_reconcile_found_is_success(self):
+        self.stub.reminders_fn = lambda tool, args: reminder_listing(
+            [(REMINDER_ARGS["name"], "Next")])
+        status, text = emails.reconcile_row(row("create_reminder", dict(REMINDER_ARGS)))
+        self.assertEqual(status, "success")
+        self.assertEqual(self.stub.reminders_calls, [("search_reminders", {
+            "query": REMINDER_ARGS["name"], "list_name": "Next", "limit": 50,
+            "format": "json"})])
+
+    def test_reconcile_list_case_is_ignored(self):
+        """The server matches list names ignoring case, so a renamed 'next'
+        list still holds the row's reminder."""
+        self.stub.reminders_fn = lambda tool, args: reminder_listing(
+            [(REMINDER_ARGS["name"], "next")])
+        status, _ = emails.reconcile_row(row("create_reminder", dict(REMINDER_ARGS)))
+        self.assertEqual(status, "success")
+
+    def test_reconcile_lookalike_is_pending(self):
+        """A longer name that merely contains the row's name is not it."""
+        self.stub.reminders_fn = lambda tool, args: reminder_listing(
+            [(REMINDER_ARGS["name"] + " again", "Next")])
+        status, _ = emails.reconcile_row(row("create_reminder", dict(REMINDER_ARGS)))
+        self.assertEqual(status, "pending")
+
+    def test_reconcile_unparseable_listing_raises(self):
+        """The text listing, or a capped one, is never read as proof of
+        absence — the row stays unknown instead of re-firing."""
+        for answer in ("0 reminder(s) match.",
+                       reminder_listing([(REMINDER_ARGS["name"] + " again", "Next")], total=2)):
+            with self.subTest(answer=answer):
+                self.stub.reminders_fn = lambda tool, args, a=answer: a
+                with self.assertRaises(emails.ListingError):
+                    emails.reconcile_row(row("create_reminder", dict(REMINDER_ARGS)))
+
+    def test_reconcile_search_failure_raises(self):
+        self.stub.reminders_fn = lambda tool, args: "FAILED: EventKit denied"
+        with self.assertRaisesRegex(RuntimeError, "EventKit denied"):
+            emails.reconcile_row(row("create_reminder", dict(REMINDER_ARGS)))
+
+
 class TestScanThread(StateDirTest):
     """The scan's thread phase: follow-up messages attach as thread_after,
     a failed check as thread_error, and shared threads cost one call."""
@@ -2348,7 +2727,7 @@ class TestScanThread(StateDirTest):
 
     def test_open_email_row_keeps_the_check_alive(self):
         """A set already carrying the reply row is re-checked each scan, so
-        a reply the user sends later still supersedes it."""
+        a reply Alex sends later still supersedes it."""
         r = row("open_email", {"email": dict(OPEN_MEMBER)})
         s = set_with_rows(["E1"], [r])
         s["emails"] = [dict(OPEN_MEMBER)]
@@ -2477,7 +2856,7 @@ class CategorizeTest(StateDirTest):
             emails.STATE = saved
 
     def save_cat_set(self, rows, ask_id=ASK["ask_id"], email_ids=("S1",)):
-        state = emails.empty_state()
+        state = listed_state(*email_ids)
         body = save_body(list(email_ids), rows)
         if ask_id is not None:
             body["ask_id"] = ask_id
@@ -2517,8 +2896,7 @@ class TestCategorizeSave(CategorizeTest):
 
     def test_ask_id_without_categorize_rows_rejected(self):
         _, code, out = self.save_cat_set(
-            [row("archive_email", {"emails": [
-                {"id": "S1", "subject": "s", "from": "f", "receivedAt": "r"}]})])
+            [row("archive_email", {"emails": ["S1"]})])
         self.assertEqual(code, 400)
         self.assertIn("categorize", out["error"])
 
@@ -2557,7 +2935,7 @@ class TestCategorizeSave(CategorizeTest):
                                     "payee": "p", "amount": "1", "account": "a",
                                     "notes": ""}
         body = save_body(["S1"], [r], ask_id=ASK["ask_id"])
-        code, out = emails.save_set(emails.empty_state(), body)
+        code, out = emails.save_set(listed_state("S1"), body)
         self.assertEqual(code, 400)
         self.assertIn("transaction", out["error"])
 
@@ -2697,7 +3075,7 @@ class TestFinanceReviewScan(CategorizeTest):
         entry = mail_entry("2026-08-16T19:49", "Riley <riley@example.org>",
                            subject, "R")
         pages = {0: inbox_listing(1, [entry])}
-        thread = [thread_entry("2026-08-16T18:00", "the user <me@example.org>",
+        thread = [thread_entry("2026-08-16T18:00", "Alex <me@example.org>",
                                "categorizing help", "Q",
                                from_you=True),
                   thread_entry("2026-08-16T19:49", "Riley <riley@example.org>",
@@ -2774,7 +3152,7 @@ class TestFinanceReviewScan(CategorizeTest):
                 "R": get_email_text("2026-08-06T09:00:00Z", "reply")}
         thread = [thread_entry("2026-08-05T18:07", MEMBERS[0]["from"],
                                MEMBERS[0]["subject"], "M1"),
-                  thread_entry("2026-08-06T09:00", "the user <me@example.org>",
+                  thread_entry("2026-08-06T09:00", "Alex <me@example.org>",
                                "Re: x", "R", from_you=True)]
         self.scan_fn(pages, gets, {"C": thread_listing([]),
                                    "M1": thread_listing(thread)})
@@ -2823,7 +3201,7 @@ class IrisTest(StateDirTest):
         self.webmail_for_scan({0: inbox_listing(0, [])}, {})
 
     def hi_one_ledgered(self, state):
-        """A provably-complete hi listing whose one entry is processed."""
+        """A provably-complete hello listing whose one entry is processed."""
         state["ledger"]["H1"] = {"state": "ignored", "first_seen": "x"}
         self.webmail_for_scan({0: inbox_listing(1, inbox_entries(["H1"]))},
                                {})
@@ -2833,6 +3211,32 @@ class IrisTest(StateDirTest):
                              "receivedAt": "2026-08-16T19:49"},
                 "category": category,
                 "added_at": added_at or common._now()}
+
+
+class TestSearchIrisInbox(IrisTest):
+    def test_pagination_two_pages(self):
+        """total (4) is above one page's worth (2); every page's hits land
+        in the result and paging stops right at the reported total — kills
+        the >= and += pagination mutants."""
+        pages = {
+            0: inbox_listing(4, [mail_line(MEMBERS[0]), mail_line(MEMBERS[1])]),
+            2: inbox_listing(4, [mail_line(MEMBERS[2]), mail_line(MEMBERS[3])]),
+        }
+
+        def fn(tool, args):
+            if tool == "search_mail":
+                return pages.get(args["offset"], inbox_listing(0, []))
+            return ToolStub._default_webmail(tool, args)
+
+        self.iris_fn = fn
+        entries, total = emails._search_iris_inbox()
+        self.assertEqual(total, 4)
+        self.assertEqual([e["id"] for e in entries], ["M1", "M2", "M3", "M4"])
+        searches = [a for t, a in self.iris_calls if t == "search_mail"]
+        self.assertEqual(searches, [
+            {"scope": "inbox", "limit": 200, "offset": 0, "format": "json"},
+            {"scope": "inbox", "limit": 200, "offset": 2, "format": "json"},
+        ])
 
 
 class TestIntake(IrisTest):
@@ -2971,13 +3375,10 @@ class TestIrisScan(IrisTest):
                          ["H1", "iris:X1", "H2"])
 
     def test_intent_consumed_on_set_save(self):
-        state = emails.empty_state()
+        state = listed_state("iris:X1")
         state["intents"]["X1"] = self.intent("X1")
-        m = {"id": "iris:X1", "subject": "s", "from": "f <f@example.org>",
-             "receivedAt": "2026-08-16T19:49:00Z"}
         body = save_body(["iris:X1"],
-                         [row("open_email", {"email": dict(m)})])
-        body["emails"] = [m]
+                         [row("open_email", {"email": "iris:X1"})])
         code, d = emails.save_set(state, body)
         self.assertEqual(code, 200)
         self.assertEqual(state["intents"], {})
@@ -3042,11 +3443,15 @@ class TestIrisScan(IrisTest):
         state["ledger"]["iris:X1"] = {"state": "in_set", "set_id": "s1",
                                       "first_seen": "x"}
         self.hi_one_ledgered(state)
-        self.iris_for_scan([mail_entry("2026-08-16T19:49", "H <h@example.org>",
+        self.iris_for_scan([mail_entry("2026-08-16T19:49", "H <me@example.org>",
                                        "s", "X1")])
         code, _ = emails.scan(state)
         self.assertEqual(code, 200)
         self.assertEqual(state["last_iris_ids"], ["iris:X1"])
+        # the iris half of the listing cache: stamped under the prefixed id
+        self.assertEqual(state["listing"]["iris:X1"],
+                         {"subject": "s", "from": "H <me@example.org>",
+                          "receivedAt": "2026-08-16T19:49"})
         self.assertFalse(
             emails.page_state(state)["sets"][0]["emails"][0]["gone"])
         self.iris_for_scan([])   # the email leaves the iris inbox
@@ -3057,13 +3462,10 @@ class TestIrisScan(IrisTest):
             emails.page_state(state)["sets"][0]["emails"][0]["gone"])
 
     def test_archive_row_rejected_on_iris_member(self):
-        state = emails.empty_state()
-        m = {"id": "iris:X1", "subject": "s", "from": "f <f@example.org>",
-             "receivedAt": "2026-08-16T19:49:00Z"}
+        state = listed_state("iris:X1")
         body = save_body(["iris:X1"],
                          [{"kind": "archive_email", "label": "a",
-                           "args": {"emails": [m]}}])
-        body["emails"] = [m]
+                           "args": {"emails": ["iris:X1"]}}])
         code, d = emails.save_set(state, body)
         self.assertEqual(code, 400)
         self.assertIn("iris-injected", d["error"])

@@ -30,16 +30,22 @@ else:
   page.html),
   GET /dev1.html../dev5.html (design-proposal pages next to page.html,
   404 when the file is absent; HEAD gives the page's [dev] tiles an
-  existence probe), GET /api/state — {"emails": ..., "finance": ...,
+  existence probe), GET /demo/api/... and POST /demo/api/... (the page's
+  [demo] mode: demo.py answers the GETs with canned data, every POST is a
+  202 that does nothing), GET /api/state — {"emails": ..., "finance": ...,
   "finance_report": ..., "research": ..., "messages": ...,
-  "hermes_audit": ..., "system": ..., "status_issues": N,
+  "hermes_audit": ..., "jobs": ..., "system": ..., "status_issues": N,
   "status_checked_at": iso}: each area's state() plus the dashboard-page issue
   count. status_issues is -1 when the check itself failed; both keys are
-  absent until the first check finishes.
+  absent until the first check finishes. The page's own poll carries the
+  hold-update query flag, which stamps the finance area's page-open marker
+  (finance.page_seen); pollers without the flag — the menu-bar app's badge
+  count — never hold a scheduled finance save.
 - the status-indicator thread: every 5 minutes runs
   hermes/iris-status/hermes-iris-status --json and counts the items whose
   state is not "ok" or "--" (the script exits 1 when problems exist — that
-  is a count, not a check failure).
+  is a count, not a check failure). The same pass hands the cron items'
+  states to the jobs area, which reports them per job.
 - SIGTERM -> clean exit so the areas' atexit hooks run (the emails area's
   webmail child dies with us).
 """
@@ -56,12 +62,14 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 import common
+import demo
 import emails
 import finance
 import finance_report
 import research
 import messages
 import hermes_audit
+import jobs
 import system
 
 APP = pathlib.Path(__file__).resolve().parent
@@ -86,7 +94,7 @@ ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}",
                    f"https://{MAGICDNS}"}
 
 AREAS = (emails, finance, finance_report, research, messages,
-         hermes_audit, system)
+         hermes_audit, jobs, system)
 
 STATUS_INTERVAL_S = 300
 STATUS_TIMEOUT_S = 60
@@ -113,6 +121,12 @@ def _status_once():
         data = json.loads(out.stdout)
         issues = sum(1 for c in data["categories"] for i in c["items"]
                      if i["state"] not in ("ok", "--"))
+        # the same pass feeds the jobs area's per-job states; a failed pass
+        # leaves the previous states standing (stale beats none)
+        jobs.set_iris_states({i["name"]: {"state": i["state"],
+                                          "detail": i["detail"]}
+                              for c in data["categories"] for i in c["items"]
+                              if i["kind"] == "cron"}, data["generated"])
         _STATUS = {"issues": issues, "checked_at": common._now()}
     except Exception:
         _STATUS = {"issues": -1, "checked_at": common._now()}
@@ -204,9 +218,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._file_reply(dev.read_bytes(), "text/html; charset=utf-8")
             return
         if path == "/api/state":
+            if "hold-update" in parse_qs(split.query, keep_blank_values=True):
+                finance.page_seen()
             self._reply(200, _state())
             return
-        handler = next((h for area in AREAS
+        handler = next((h for area in (*AREAS, demo)
                         if (h := getattr(area, "GET_HANDLERS", {}).get(path))), None)
         if handler is None:
             self._reply(404, {"error": "not found"})
@@ -227,6 +243,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._guard(mutating=True):
             return
         path = urlsplit(self.path).path
+        if path.startswith("/demo/api/"):
+            # the page's optimistic row states show, then its next poll
+            # brings the canned rows back; 202 satisfies every check the
+            # page makes on a write's answer
+            self._reply(202, {})
+            return
         handler = next((area.HANDLERS.get(path) for area in AREAS
                         if path in area.HANDLERS), None)
         if handler is None:
