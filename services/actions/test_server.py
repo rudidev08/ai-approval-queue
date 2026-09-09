@@ -28,6 +28,7 @@ import research
 import server
 import hermes_audit
 import jobs
+import reminders
 import system
 
 CREATE_ARGS = {"calendar": "Personal", "title": "Thursday Run Club",
@@ -90,6 +91,10 @@ class TestHandler(unittest.TestCase):
         jobs.EXECUTIONS = tmp / "executions.db"
         jobs.JOBS_FILE.write_text('{"jobs": []}')
         jobs._IRIS_STATES = {}
+        # the reminders area's host-app reads run in a thread boot() starts;
+        # nothing here boots, so state() only returns STATE
+        self._rem = reminders.STATE
+        reminders.STATE = reminders._empty("FAILED: no host app in tests")
         common.CRON_JOBS = jobs.JOBS_FILE
         # the research area reads the vault's research tree, the driver's
         # runs log and its cleared-flags store; pointed at the temp dir,
@@ -128,6 +133,7 @@ class TestHandler(unittest.TestCase):
         research.TOPICS, research.REPORTS, research.RUNS = self._saved[15:18]
         research.CLEARED, common.CRON_JOBS = self._saved[18:20]
         jobs.JOBS_FILE, jobs.EXECUTIONS, jobs._IRIS_STATES = self._saved[20:23]
+        reminders.STATE = self._rem
         server.ALLOWED_HOSTS.clear()
         server.ALLOWED_HOSTS.update(self._saved[5])
         server.ALLOWED_ORIGINS.clear()
@@ -191,8 +197,8 @@ class TestHandler(unittest.TestCase):
         code, d = self.call("GET", "/demo/api/state?hold-update")
         self.assertEqual(code, 200)
         self.assertEqual(sorted(d), ["emails", "finance", "finance_report",
-                                     "hermes_audit", "jobs", "messages", "research",
-                                     "status_checked_at", "status_issues",
+                                     "hermes_audit", "jobs", "messages", "reminders",
+                                     "research", "status_checked_at", "status_issues",
                                      "system"])
         # the real state has one set; the demo data is its own
         self.assertNotIn("s1", [x["id"] for x in d["emails"]["sets"]])
@@ -220,7 +226,8 @@ class TestHandler(unittest.TestCase):
         code, d = self.call("GET", "/api/state")
         self.assertEqual(code, 200)
         self.assertEqual(sorted(d), ["emails", "finance", "finance_report",
-                                     "hermes_audit", "jobs", "messages", "research", "system"])
+                                     "hermes_audit", "jobs", "messages", "reminders",
+                                     "research", "system"])
         self.assertEqual([s["id"] for s in d["emails"]["sets"]], ["s1"])
 
     def test_state_poll_with_hold_update_stamps_the_finance_page(self):

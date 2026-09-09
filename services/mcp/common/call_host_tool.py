@@ -47,6 +47,16 @@ async def call_host_tool(port: int, tool: str, arguments: dict) -> tuple[str, bo
             return text, ok
 
 
+def call_sync(port: int, tool: str, arguments: dict) -> tuple[bool, str]:
+    """(ok, text) from one call, for the actions areas: any exception (a
+    refused connection, the timeout) becomes a FAILED: text."""
+    try:
+        text, ok = asyncio.run(call_host_tool(port, tool, arguments))
+    except Exception as e:
+        return False, f"FAILED: {type(e).__name__}: {e}"
+    return ok, text
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--port", type=int, required=True)

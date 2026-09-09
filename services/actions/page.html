@@ -30,7 +30,7 @@
      The bar's wordmark cycles iris, dev, demo: dev swaps the app icons for
      the design-proposal tiles, demo feeds the page canned data from the
      service (demo.py) so every area and row state renders.
-     The work layer is eight areas. Each opens with its control row, in the
+     The work layer is nine areas. Each opens with its control row, in the
      console's own row shape: the area's header on the left — icon, name and
      one status line carrying its scan state, then its counts in their
      shortest form ("last ran 1 hr ago, 12 in inbox") — and every key of that
@@ -97,6 +97,10 @@
      extra area (the job's schedule, and its 7-day retry count with the
      newest retry message), and a run key that starts the job now;
      the same run the schedule makes),
+     reminders (one card per group of Apple Reminders lists — the group's
+     name in a block on the left, one cell per list with its open count in
+     the list's own color, its stage and its first three open reminders —
+     read through the host app's reminders server; no keys),
      and system (a console: one row per thing —
      the gateway, the two webuis — each with its own timer
      and its own keys; explanations live in the keys' tooltips, not on the
@@ -271,6 +275,7 @@ body {
 .atile.messages { --ac: var(--s3); }
 .atile.audit { --ac: var(--s2); }
 .atile.jobs { --ac: var(--s1); }
+.atile.reminders { --ac: var(--s2); }
 .atile.system { --ac: var(--sub); }
 
 /* the strip: icon+count chips pinned under the bar while the tile grid is
@@ -302,6 +307,7 @@ body {
 .schip.messages { --ac: var(--s3); }
 .schip.audit { --ac: var(--s2); }
 .schip.jobs { --ac: var(--s1); }
+.schip.reminders { --ac: var(--s2); }
 .schip.system { --ac: var(--sub); }
 
 /* ---- area headers: slim rows, no longer sticky (the strip orients) -------
@@ -335,6 +341,45 @@ body {
   justify-content: flex-end; }
 /* the label over the system area's second console */
 .syslabel { margin: 14px 2px 6px; }
+
+/* ---- the reminders area: one card per group of Apple Reminders lists.
+   The group's name in a block on the left, its lists as cells of one
+   width to the right, as many columns as the biggest group has lists. A
+   cell: the open count upper left in the list's own color from
+   Reminders.app, the stage upper right, up to three open items under
+   them; an empty list fades. Cells touch, each drawing its right and
+   bottom hairline; the grid hangs 1px past the card so the outer ones
+   fall under the card's border. */
+.panel.rm-card { display: grid; grid-template-columns: 150px minmax(0, 1fr);
+  margin: 0 0 12px; }
+.rm-title { padding: 11px 14px 13px; border-right: 1px solid var(--rule);
+  min-width: 0; }
+.rm-cells { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  margin: 0 -1px -1px 0; min-width: 0; }
+.rm-cell { display: flex; flex-direction: column; min-width: 0;
+  padding: 11px 14px 13px; --lc: var(--ink);
+  border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.rm-top { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 10px; min-width: 0; }
+.rm-num { font-size: 36px; font-weight: 600; line-height: 1.1;
+  letter-spacing: -0.02em; margin: 2px 0 8px; color: var(--lc); }
+.rm-lbl { font-size: 10.5px; font-weight: 650; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--sub); line-height: 1.5;
+  margin-top: 3px; min-width: 0; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.rm-cell.zero .rm-num, .rm-cell.zero .rm-lbl { color: var(--faint); }
+.rm-items { list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 2px; min-height: 52px; }
+.rm-items li { display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  font-size: 11.5px; line-height: 16px; color: var(--sub); }
+.rm-items .t { flex: 1 1 auto; min-width: 0; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.rm-items .d { flex: none; font-size: 10.5px; letter-spacing: 0.02em;
+  color: var(--faint); }
+.rm-items .d.bad { color: var(--amber); }
+@media (max-width: 820px) {
+  .panel.rm-card { grid-template-columns: 112px minmax(0, 1fr); }
+  .rm-cells { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* a control row carrying the area's header in place of a name: icon, name
    and status line on its left, that area's keys on its right */
@@ -992,6 +1037,16 @@ html[data-text="l"] .upstat { font-size: 16px; }
     <div id="cards-jobs"></div>
   </section>
 
+  <section class="area" id="area-reminders">
+    <div class="area-top" id="head-reminders">
+      <span class="a-ic reminders"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/></svg></span>
+      <h2 class="area-h">reminders</h2>
+      <span class="a-info" id="rem-line"></span>
+    </div>
+    <!-- one card per group of lists; drawn by renderReminders -->
+    <div id="rem-cards"></div>
+  </section>
+
   <section class="area" id="area-system">
     <div class="area-top" id="head-system">
       <span class="a-ic system"><svg class="svg-icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
@@ -1086,6 +1141,7 @@ const ICONS = {
   "calendar-search": '<path d="M16 2v3"/> <path d="M21 10.69V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h7.25"/> <path d="m22 21-1.875-1.875"/> <path d="M3 9h18"/> <path d="M8 2v3"/> <circle cx="18" cy="17" r="3"/>',
   "tag": '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/> <circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
   "clock": '<circle cx="12" cy="12" r="10"/> <path d="M12 6v6l4 2"/>',
+  "list-checks": '<path d="M13 5h8"/> <path d="M13 12h8"/> <path d="M13 19h8"/> <path d="m3 17 2 2 4-4"/> <path d="m3 7 2 2 4-4"/>',
   "external-link": '<path d="M15 3h6v6"/> <path d="M10 14 21 3"/> <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   "map-pin": '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/> <circle cx="12" cy="10" r="3"/>',
   "repeat": '<path d="m17 2 4 4-4 4"/> <path d="M3 11v-1a4 4 0 0 1 4-4h14"/> <path d="m7 22-4-4 4-4"/> <path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
@@ -1840,8 +1896,8 @@ function renderMeta() {
 
 localStorage.removeItem("iris-areas-collapsed");   /* the old collapse UI's store */
 const VIEW_KEY = "iris-actions-view";
-const AREA_IDS = ["emails", "messages", "finance", "report", "research",
-                  "audit", "jobs", "system"];
+const AREA_IDS = ["emails", "messages", "finance", "reminders", "report",
+                  "research", "audit", "jobs", "system"];
 /* the areas the queue view stacks, its tile sums and its icons name */
 const QUEUE_IDS = ["emails", "messages", "finance"];
 let view = localStorage.getItem(VIEW_KEY);
@@ -1991,6 +2047,12 @@ const TILES = {
       return [["", `${DATA.jobs.runs_24h} runs today`]];
     },
   },
+  reminders: {
+    /* the count is what is due today or earlier; no status line */
+    name: "reminders", icon: "list-checks",
+    count: () => DATA.reminders.due_today,
+    short: () => DATA.reminders.error ? [["bad", "offline"]] : [],
+  },
   system: {
     name: "system", icon: "server",
     count: () => null,
@@ -2106,6 +2168,7 @@ async function poll() {
     if (msgSnapshot() !== renderedMessages) renderMessages();
     if (auditSnapshot() !== renderedAudit) renderAudit();
     if (jobsSnapshot() !== renderedJobs) renderJobs();
+    if (remSnapshot() !== renderedReminders) renderReminders();
     pageError = "";
     pacePoll();
   } catch (e) {
@@ -4259,6 +4322,68 @@ async function startMsgScan() {
   }
 }
 
+
+/* ---- reminders ------------------------------------------------------------ */
+/* One card per group of Apple Reminders lists: the group's name in a block
+   on the left, one cell per list — count, stage, up to three open items.
+   The service groups and orders the lists; the page draws them and words
+   each due date against its own clock. */
+
+let renderedReminders = null;
+const remSnapshot = () => JSON.stringify(DATA.reminders);
+
+/* "today", "tomorrow", "Sep 10", "Mar 2027"; a past date is bad */
+function dueWord(due) {
+  if (!due) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d = new Date(due + "T00:00:00");
+  const days = Math.round((d - today) / 864e5);
+  if (days === 0) return { text: "today", bad: false };
+  if (days === 1) return { text: "tomorrow", bad: false };
+  const text = d.getFullYear() === today.getFullYear()
+    ? d.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+    : d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  return { text, bad: days < 0 };
+}
+
+function renderReminders() {
+  if (!DATA) return;
+  renderedReminders = remSnapshot();
+  const r = DATA.reminders;
+  $("#rem-line").replaceChildren(r.error ? el("span", "bad", r.error) : "");
+  const host = $("#rem-cards");
+  host.replaceChildren();
+  for (const g of r.groups) {
+    const card = el("section", "panel rm-card");
+    const title = el("div", "rm-title");
+    title.append(el("div", "rm-lbl", g.label));
+    card.append(title);
+    const cells = el("div", "rm-cells");
+    cells.style.setProperty("--cols", r.columns);
+    for (const l of g.lists) {
+      const cell = el("div", "rm-cell" + (l.count ? "" : " zero"));
+      cell.style.setProperty("--lc", l.color);
+      const top = el("div", "rm-top");
+      top.append(el("div", "rm-num", String(l.count)));
+      if (l.label) top.append(el("div", "rm-lbl", l.label));
+      cell.append(top);
+      const ul = el("ul", "rm-items");
+      for (const it of l.items) {
+        const li = el("li");
+        const t = el("span", "t", it.name);
+        t.title = it.name;
+        li.append(t);
+        const d = dueWord(it.due);
+        if (d) li.append(el("span", "d" + (d.bad ? " bad" : ""), d.text));
+        ul.append(li);
+      }
+      cell.append(ul);
+      cells.append(cell);
+    }
+    card.append(cells);
+    host.append(card);
+  }
+}
 
 /* ---- actions ------------------------------------------------------------- */
 

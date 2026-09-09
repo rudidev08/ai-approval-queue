@@ -53,6 +53,16 @@ PDF texted in a family chat, with a guessed folder and the extracted text:
 
 ![A message attachment offered for filing](screenshots/actions-messages-text.png)
 
+### The reminders overview
+
+All my Apple Reminders lists, read-only. Not part of the action queue flow. Low effort and on this page, since:
+
+- the Reminders MCP already works
+- I already use this page for daily overview
+- the native overview was lacking
+
+![The reminders overview](screenshots/actions-reminders.png)
+
 ## Additional tabs
 
 Four smaller tabs round out the actions page, plus a system console. Not all of their machinery is part of this slice: the research and audit areas are the real modules, but the scripts they trigger are not included, so their run buttons have nothing to call here.

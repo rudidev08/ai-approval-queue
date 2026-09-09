@@ -415,11 +415,38 @@ def _jobs():
     ], "runs_24h": 37}
 
 
+def _reminders():
+    """The shape reminders.build makes: groups of lists, most open first."""
+    def lst(label, color, items):
+        return {"label": label, "color": color, "count": len(items),
+                "items": [{"name": n, "due": d} for n, d in items]}
+    return {"error": None, "columns": 3, "open": 10, "due_today": 2, "groups": [
+        {"label": "Alex", "open": 7, "lists": [
+            lst("waiting", "#83d754",
+                [("Hear back from the plumber", _day(0)), ("Renew the library card", _day(3)),
+                 ("Book the car service", _day(20))]),
+            lst("next", "#83d754",
+                [("Call the school office", ""), ("Return the borrowed drill", "")]),
+            lst("ready", "#83d754",
+                [("Plan the weekend hike", ""), ("Sort the photo backup", "")]),
+        ]},
+        {"label": "Riley", "open": 2, "lists": [
+            lst("", "#ac7f5e",
+                [("Take the bins out", _day(-1)), ("Change the water filter", _day(23))]),
+            lst("Shopping", "#ac7f5e", []),
+        ]},
+        {"label": "Sam", "open": 1, "lists": [
+            lst("waiting", "#cb30e0", [("Pick up the parcel", "")]),
+        ]},
+    ]}
+
+
 def state():
     return {"emails": _emails(), "finance": _finance(),
             "finance_report": _finance_report(), "research": _research(),
             "messages": _messages(), "hermes_audit": _hermes_audit(),
-            "jobs": _jobs(), "system": {"gateway": _utc(-3 * D), "webui": None},
+            "jobs": _jobs(), "reminders": _reminders(),
+            "system": {"gateway": _utc(-3 * D), "webui": None},
             "status_issues": 3, "status_checked_at": _utc(-4)}
 
 

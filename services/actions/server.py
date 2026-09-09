@@ -7,7 +7,7 @@
 
 The page's areas live in their own modules (emails.py, finance.py,
 messages.py, hermes_audit.py, finance_report.py, research.py,
-system.py); each
+reminders.py, system.py); each
 exposes NAME, boot(), state(), HANDLERS ({POST path: fn(body) -> (code,
 payload)}) and optionally GET_HANDLERS ({GET path: fn(params) -> (code,
 payload)}, params a single-valued query dict). This file owns everything
@@ -34,7 +34,8 @@ else:
   [demo] mode: demo.py answers the GETs with canned data, every POST is a
   202 that does nothing), GET /api/state — {"emails": ..., "finance": ...,
   "finance_report": ..., "research": ..., "messages": ...,
-  "hermes_audit": ..., "jobs": ..., "system": ..., "status_issues": N,
+  "hermes_audit": ..., "jobs": ..., "reminders": ..., "system": ...,
+  "status_issues": N,
   "status_checked_at": iso}: each area's state() plus the dashboard-page issue
   count. status_issues is -1 when the check itself failed; both keys are
   absent until the first check finishes. The page's own poll carries the
@@ -70,6 +71,7 @@ import research
 import messages
 import hermes_audit
 import jobs
+import reminders
 import system
 
 APP = pathlib.Path(__file__).resolve().parent
@@ -94,7 +96,7 @@ ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}",
                    f"https://{MAGICDNS}"}
 
 AREAS = (emails, finance, finance_report, research, messages,
-         hermes_audit, jobs, system)
+         hermes_audit, jobs, reminders, system)
 
 STATUS_INTERVAL_S = 300
 STATUS_TIMEOUT_S = 60
