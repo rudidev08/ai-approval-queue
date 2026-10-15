@@ -1,0 +1,268 @@
+# Setup — ops (service + actions page)
+
+The ops service runs every assistant control. The actions page is one client; the assistant_ops MCP server, the cron wrappers and the menu-bar app are others.
+
+- Family emails is the Actions area at `/?view=family_emails`: the emails the assistant sends each person on a schedule. One queue item is one person (Alex, Sam) and one email kind: finance daily, weekly or monthly, or reminders daily.
+  - Every finance item of a kind sends that kind's preset: its sections and options. Finance reports sets the presets; a finance item has no settings of its own.
+  - The area's status line counts the emails that are on, the failed ones, and the next send. Each person is one card. Its head row: name, the address field with its save and discard keys, and the add dropdown with its plus key. The add dropdown and plus key stay off until the address is saved. New items start on and open on the edit tab; a reminders item with no list starts paused. A new reminders item starts with the lists named after the person (every list for Alex) and the Added and Completed sections.
+  - Each item is one row: kind, then the meta line (paused in amber, last send, next send; a test send marked (test), a run-now send (run now)), an amber error line, a building/sending/failed word (failed in amber), and a chevron.
+  - The error line shows the last failure as "last run failed: …" or "last test failed: …". A failure on missing lists adds "lists fixed" once every saved list exists again. The line also warns about saved lists that Reminders no longer has, before a run fails on them.
+  - The open row has three tabs:
+    - sent: pause or resume, run now, remove, and an email that went out (scheduled or run now), picked by date. Test sends are not listed.
+    - sample: the email built from made-up rows with what the item holds, its subject marked (sample). Every chosen section has something to print, with about as many rows as a real email; a reminders sample skips about half the chosen lists in each section, as real days do. It is read fresh on every pick and on its refresh key, stored nowhere, and never sent.
+    - edit: the same pause or resume, run now and remove keys as sent, then what the email holds, then show, the test recipient, send test, and the preview text.
+      - A reminders item: the settings chips, then save and discard.
+      - A finance item: one options line naming each section and option of the kind's preset, a green check where it is in, a gray x where it is out.
+    - The newest sent email shows by default, else edit when a preview exists, else the sample.
+  - A reminders chip change stays on the page until save; discard puts the saved settings back. List chips are grouped in rows by first word; lists with a first word of their own share the last row. A chosen list that Reminders no longer has shows in amber with a warning icon. The last chip of a group cannot be turned off.
+  - Turning an item on needs a saved address; an address cannot be removed while one of the person's items is on. Save, pause, run now, remove, show, and send test take two taps; discard takes one.
+  - Show builds the preview with what the item holds. Show and send test are off while changes are unsaved; a settings or preset change after a build marks the preview stale, and send test needs a fresh one. Send test sends the preview's exact text to the picked saved family address with `[Test]` before the subject.
+  - Run now builds and sends one item at once, paused or not. The schedule does not change: the next scheduled run sends as usual. Run now is refused with no saved address, with no list chosen, or while another email builds or sends; a scheduled run does not wait for a run now.
+  - `family_emails.py` serves POST `/api/family-emails/address`, `/queue` (add, remove, enable, disable, settings; settings for a reminders item only), `/preset` (a finance kind's sections and options, finance reports' make-default key), `/preview`, `/send-test`, `/run-item` and `/run`, and GET `/api/family-emails/text?id=` (a delivery id, a person/kind preview key, or person/kind/sample, built on the request), `/run?id=` and `/state` (the area's state plus each kind's newest run, for assistant_ops' family_emails tools). Its state rides `/api/state` like every other area; the reminder list names come from the reminders area's once-a-minute read while the page is open; with it closed, `/state` and an add read them once when none are known.
+  - `family-emails.json` under `ASSISTANT_OPS_STATE` stores each person's address, the queue items (on/off; a reminders item's settings; for the finance daily the transaction ids already printed for that person), each finance kind's preset, the last 20 delivery records per item with the exact text sent, and a week of run records. Previews live in memory only.
+    - A preset starts as every section, with combine personal on for the weekly and monthly and show new payees on for the daily; every other option off. The weekly and monthly take details and combine personal, since they always print the category rows; the daily and monthly take show new payees, since they carry the Unusual charges.
+  - `finance_email.py` builds a finance email or one part of it: one budget read, one model call when Summary is in the build, run under the cron scripts' interpreter. Finance reports builds through it too. The monthly email covers the month that just ended. A build writes nothing; the printed ids (every fresh transaction of the daily's window, commented on or printed) are recorded only after a scheduled or run-now send succeeds. A sample build reads no budget and calls no model: made-up rows fill every chosen section.
+  - Reminder emails read the chosen lists through the host app's reminders server. Due soon is today. Added and Completed cover the 24 hours up to the latest 06:00, the job's run time (`CUTOFF`). A late run covers the same 24 hours, so no reminder falls between two emails. A reminder completed within 3 minutes of being added is a mistaken add: it shows in neither Added nor Completed. A truncated read fails the build. A reminder email with nothing in it is skipped when the item says so.
+  - `family_emails_send.py` runs in the mail venv, reads the allowed recipients (the saved addresses) from the store, and uses the shared mail sender once. The MCP tool and `send_mail.py` keep their fixed recipient allowlist. A mail API failure or a lost answer is tried once more after five minutes; a refusal is not. A failed send is recorded with the sender's own error, followed by a note to check the Sent folder before sending again.
+  - `family_emails_job.py` is what the four hermes cron wrappers run: finance-daily, finance-weekly, finance-monthly and reminders-changes, each at its own time of day. It posts `/run` with the kind and waits for the run. One run per kind per day: a second call the same day gets the stored run, unless that run failed, in which case a new run sends only to the people the failed one did not reach. A run that fails exits nonzero, so the job's failure alert goes out; the failed item shows on the page.
+  - A service restart marks every email caught building or sending as failed and every running run as failed; a re-run then sends those items again.
+  - `test_family_emails.py` (run with the mail venv's python) and `test_finance_email.py` cover it with reads, sends and threads stubbed.
+  - The summary's model call runs `services/mcp/common/model_fallback.py` with the strict JSON schema.
+
+The page where the user approves things. Its areas: dashboard (a few facts from other areas as widgets: a small one per family-emails person with the address and each email's next send, amber when late, and one for the chat gateways with a dot per link and the last chat; a widget opens its area; problems stay on the navigation's badges), family emails (saved email queues and sent history), inbox (sets of cards derived from the inbox scan), chat (save proposals for attachments in watched chats), finance (the budget categorization queue), finance reports (works on the finance emails: builds a kind's whole email or one part from demo data or the budget, and sets the presets family emails sends), web research (the recurring web-research topics: run one now, delete its stored report, or delete the topic), audit (runs the deterministic Hermes audit and shows the pass as it happens), jobs (every enabled hermes cron job, each behind one of five group icons — email, calendar, files, system, finance: how long the last 3 finished runs took, when the last week's failed runs happened, last and next run, current state, a chevron opening the schedule and the 7-day retry count with the newest retry message, and a run key per job), reminders (an overview of the Apple Reminders lists: one card per group of lists, one cell per list with its open count, its stage and its first three open reminders; no keys), gateways (demo mode only, since its service module is not in this repository: a console with one row per way to reach the assistant — the hermes gateway, Discord, Telegram, the web chat, the hermes dashboard, the desktop app, the terminal: whether each runs, the account or link that reaches it, the last chat (its title or first words, its last line, how long ago), a key that opens the chat, on/off keys for Discord and Telegram, and restart keys for the gateway, the web chat and the hermes dashboard), and system (a console with the model pause, the status check's problem items, then one saved-data row per area with a reset: inbox, chat, audit). The navigation cards show each area's icon, next run time, open count and name. A card opens one area. Inbox is the default. System stays last. An area with a control row opens with it, built like the system console's rows: the area's header on the left — icon, name and one status line carrying its scan state, then its counts in their shortest form — and every key of that area on the right, so the title row and the control row are one row.
+
+## Pieces
+
+- server.py — the service, run by launchd com.example.assistant.ops with KeepAlive
+- pages/ — every page file the service serves: actions.html (the actions page, polling the service), overview.html (the overview page, its data from overview.py), theme.css and shared.js (the colors, helpers and icons every page shares), bar.js (the top bar), dev-bar.js (the dev tiles), armed-button.js and tap-feedback.css (the actions page's two-tap keys), the two home-screen icons
+- overview.py — the overview page's data: services, models, tools, sessions; also the link list the menu-bar app reads
+- finance.py — the finance area; finance_jobs.py fills it from the finance-uncategorized cron job
+- files_client.py — what the chat and inbox areas share for filing: calls to the host app's files server over its port, and the filing folders (every folder under Papers and SharedPapers outside the top-level `ignore` folder and hidden folders), walked on the disk
+- job_rules.py — the rules the user approves for a page area's model job, kept in state/rules.json: the inbox scan gets them through the actions_inbox server, the inbox area shows them under the sets with the suggestions waiting for a thumbs up or down, in a card that starts closed; rules_suggest.py fills the suggestions from the weekly rules-suggest cron job: it reads each area's evidence of the last 180 days from the decisions log (for inbox: every create_event row that ran, and whether the user moved it to another calendar), makes one model call per area with new evidence through model_fallback, and posts the suggestions back; the service keeps only the ones that cite evidence it recorded
+- chat_area.py — the chat area (named so because chat is a common variable name); chat_scan.py fills it from the chat-attach-scan cron job, reading the watched chats through the host app's chat server, resolving senders through its contacts server, and filing through its files server
+- hermes_audit.py — the Hermes audit area; starts ../hermes-audit/audit.py and reads the files it leaves in the folder ASSISTANT_HERMES_AUDIT_STATE names, writes snoozes.json there for the snooze key, plus reads the hermes-audit cron job's stamps from ~/.hermes/cron/ for the last-run and next-run indicators; GET `/api/hermes-audit/status` and `/report` answer the run's state and the report as text
+- finance_reports.py — the finance reports area; builds through finance_email.py (family_emails.finance_build) and keeps each row's text in memory; drafts or saves that text on request
+- inbox.py — the inbox area: the inbox scan's sets, their rows and their execution
+- research.py — the web research area; reads the research topics and reports (ASSISTANT_WEB_RESEARCH: Desk/assistant/web-research), and spawns services/mcp/web_research/driver.py for a run
+- jobs.py — the jobs area; reads hermes' cron jobs file, executions ledger and the scripts' retry log (~/.hermes/logs/cron-retries.log), gets per-job states from the server's assistant-status pass, and starts a job through `hermes cron run`; GET `/api/jobs/log?job=&runs=` answers a job's saved run output from ~/.hermes/cron/output
+- system.py — the system area; runs `hermes doctor --fix` for the audit's doctor-warning key, runs `hermes gateway start` and copies the new plist for the audit's stale-plist key (the area's clear-cache key is server.py's own endpoint, since the status thread lives there), and writes or clears the pause file `ASSISTANT_LLM_PAUSE` names (../mcp/common/llm_pause.py); GET `/api/system/status-report` runs the status script for its text report, `/api/system/health-check` runs ../mcp/health_check.py
+- reminders.py — the reminders area; reads the lists and every open reminder through the host app's reminders server (get_lists and search_reminders in their json form), groups the lists by the first word of their name, leaves out the lists named in IGNORED_LISTS (Alex), and reads them in the background on the page's own polls, at most once a minute and never while the page is closed, so a page poll never waits on the host app
+- state/ — live data, kept out of git: state.json, rules.json, finance.json, finance-oddities.json, finance-oddities-seen.json, chat.json, web-research-cleared.json, family-emails.json and decisions-YYYY.jsonl; directory 0700, files 0600
+  - The service finds it through `ASSISTANT_OPS_STATE`, one of the variables the launchd plist sets: every folder or file the service or a child it starts writes has one (server.py's VARIABLES), and main() checks them all before a port opens. A scratch script that imports an area and calls a save without the variable raises instead of writing here.
+- pagecheck.swift — renders a page in the Mac's own WebKit and prints what it drew; test_page.py compiles it with swiftc and points it at a test server in the page's demo mode, so a row kind the page cannot draw fails the test instead of blanking the inbox area. Every row kind the service accepts must have a row in demo.py, the same test checks that.
+- inbox.env — the sender and recipient addresses the inbox scan drops
+- chat.env — the chat area's watched chats, lookback and card cap
+
+## How the parts divide
+
+- The page is the only execution path for the approval queues: approve and deny there fire rows.
+- assistant_ops calls the service for every other control, so the assistant and the page share one copy of each: status, cron logs, the audit, the health check, and the family emails.
+- The MCP server (actions_inbox) and the cron job only scan, propose, and record sets — execution never leaves the page.
+  - A set needs at least one calendar row (create, update or delete event), one add-delivery row (a shipment to track in Parcel) or one copy row (a document to file into Papers or SharedPapers); the service rejects one without. Archive and open-email rows only ride along with one.
+- Finance cards apply through one write-helper run per call: the row's check key sends one card, the control row's submit-all key sends every valid card. One call runs at a time.
+- Creating a category works from the page (the row's create form) and from the budget app's web UI.
+
+## Network
+
+- Binds 127.0.0.1:8300.
+- A reverse proxy on the private network publishes it as https://assistant.example.net: the actions page at /, the overview page at /overview.
+
+## Logs
+
+- ~/.hermes/logs/ops.log holds the request lines the handler prints to stdout.
+- ~/.hermes/logs/ops.error.log holds real errors only.
+- newsyslog rotates both at 1 MB, keeping 2 (/etc/newsyslog.d/assistant-ops.conf, mirrored in setup/newsyslog.d/).
+  - Rotation SIGTERMs the pid in ~/.hermes/logs/ops.pid so KeepAlive restarts the service and it reopens the new files.
+
+## Behavior worth knowing
+
+- One key language on the whole page: same action, same icon, same slot.
+  - The green check does it: approve, accept, save, seen, submit all, seen all.
+  - The x does not: deny, skip, hide a proposal, close. It is amber only in a control row, where it acts area-wide; inside a card or row it is gray.
+  - The circular arrow rescans (rebuilds the area's list now). Play runs a thing now: a job, a research topic, the audit, a report part. The rotate arrow restarts a process. The speech bubble is chat.
+  - The green check is always the last key on the right: a control row reads circular arrow or play, x, check. A row's keys end x, check.
+  - Words stay only for actions no icon covers: clear, retry, accept, stop, restore, delete, email draft, save a file, copy, clear failure, new category, reset.
+- Everything finished leaves its area for the done section at the bottom of the view: resolved email sets as cards, newest first, then saved message rows and filed finance rows together in one card. The done section holds only the selected area's items.
+  - The section exists only while it has something. Its header counts the items and carries the clear key, which posts the hide-all of every area with something there.
+  - Items leave on their own anyway: a resolved set 24 hours after it resolved, a saved message row at the next chat scan, a filed finance row at the next scheduled finance scan.
+  - Anything that still needs a decision stays in its area: pending rows, failed rows, stuck sets.
+  - Every reset lives in the system area's saved-data rows, never in its own area.
+- Each view shows one area. That area's control row holds its keys.
+  - Web research, jobs, reminders, gateways and system have no control row: their header stands alone over their panels, and their keys sit in their own rows.
+  - Chevrons open and close every expandable row and email set. Clicking row text or a set title does nothing. Rows have no hover highlight. Email rows get a chevron beside their action keys; report, research, finance, chat, and jobs keep their chevrons. Nested email rows have separate open states.
+- The navigation cards count pending email sets, open finance and message items, audit findings, jobs needing attention, and reminders due today or earlier in the user's own lists. Finance includes its oddities.
+  - Each card: the area's icon on a colored square top left, the next run time over the count top right, the name below. A small green spinner takes the time's place while a run goes.
+  - A yellow "!" badge on the icon marks an issue; an overdue next run is amber.
+  - One row per group at four columns, no group names: today (dashboard first), money and family emails, the assistant's own runs, the system. Phones use three columns, or two at the larger text sizes, so a group can wrap; the wider gap between groups marks them.
+  - Areas that do the same kind of job share an icon color: blue email, green talking, deep green money, purple dates and to-dos, orange the assistant's own runs.
+  - The top bar's chevron shows and hides the cards, together with the bar's fold-out row. They start hidden, the choice sticks per device, and the cards scroll with the page.
+  - The selected area stays in localStorage per device.
+  - The host app's menu badge counts emails the same way, one per set holding a pending row.
+- The page's calendar list (the dot colors, and the writable calendars in a new event row's dropdown) comes from one list_calendars call to the host app, started by the page's first poll and kept until a service restart or the system area's cache clear; a failed call is tried again on a later poll, a minute apart.
+  - Writable: editable, and a title no other calendar shares.
+  - A set's save and an approve that carries a calendar pick read the list live, never this copy. The scan hands the agent the writable calendars with what each is for.
+  - A pick from the dropdown is sent with the approve. The service writes it into the row, stamps the row's hash again, and keeps the scan's pick as proposed_calendar; the decisions log carries both, which is the rules job's evidence.
+  - A Work row says the busy-events job copies it to Shared; no row in a set does that copy.
+- A new event row's title is a text field. A changed title is sent with the approve and handled like a calendar pick: the scan's title stays as proposed_title, and the decisions log carries both.
+- A new event row with a suggestion (the scan's one suggested time for a meeting the user picks) shows its start as a date field and a time field, filled with the scan's time.
+  - A changed start is sent with the approve. The service writes it into the row, moves the end with it so the length stays, and stamps the row's hash again.
+  - A set holds one suggestion row at most; the save rejects a second.
+- The emails scan key starts the actions-inbox-scan cron job; running state and last-run time come from hermes' cron ledger.
+- Opening a member email row shows the email's own text (header block and body, as get_email renders them).
+  - GET /api/inbox/body?set_id&email_id reads it live; sets store the snapshot facts, never the body.
+  - A set's member facts (subject, sender, date) are stamped by the service from the scan's inbox-listing cache — the scan agent passes email ids only, so a model typo can never corrupt them.
+  - The page asks once per email and keeps the answer until reload.
+  - An id the mail child no longer knows — its session restarted, or an archive row moved the email out of the inbox — is put back by a mailbox-wide search on its sender and received day, read page by page until the id shows, then fetched again.
+  - During a scan, the first forgotten id lists the inbox's newest 200 again instead. That one search puts back every id on the page. An id still unknown after that gets its own search.
+  - A failed fetch shows in the row as the tool's own message.
+- A set card's head carries its keys next to chat, per state of the set: the x (skip) then the green check (approve all) while rows wait, retry next to accept while the set is stuck, nothing once it is resolved.
+  - Approve all is POST /api/inbox/approve-set with the set's waiting rows in the set's order: the service runs them one after another in one thread, marking each in_progress only when its turn comes, and stops at the first row that does not succeed. The rows after it stay pending with their own keys, so the failure is looked at before anything else runs. The same 409s as a single approve apply: a stale row, another row executing.
+  - Skip denies every row still waiting, one call each — the same deny as the row's own x key.
+  - Hiding takes a finished card off the page before its 24-hour window ends; POST /api/inbox/hide marks the record, and the denials, ledger entries and log lines stay as they are. The done section's clear key posts it with all: true, which takes resolved sets only.
+  - A stuck set (nothing waiting, a row that failed keeps it pending) shows two keys — the choice is the user's:
+    - Retry is POST /api/inbox/reset for that set — the set is voided and its emails leave the ledger.
+      - Nothing proposes them until a scan runs, so the heading row says to run a rescan until one lands. A scan only offers emails absent from the ledger, and a set member is in it, so a rescan without the retry never brings them back.
+      - The reminder lives in the page, not the service: a reload drops it, and the next scheduled scan picks the emails up either way.
+    - Accept settles the set as resolved with its failed rows standing as final, then hides it — moving on without a re-run. It is POST /api/inbox/hide by set_id; the clear key never touches a stuck set.
+  - Hiding is final — nothing brings a hidden set back.
+  - The inbox reset (the system area's saved-data row) is POST /api/inbox/reset with all: true: every set, ledger entry and denial goes. The scan stamps and the listing cache stay.
+- An add-delivery row adds one shipment to Parcel, the package tracker on this Mac and the phone: approving posts the tracking number, Parcel's carrier code and the description to Parcel's add-delivery API through services/mcp/parcel/parcel_api.py, the client the parcel MCP server shares. Without PARCEL_KEY the row fails at approval and a boot line in ops.log says so.
+  - The description is the delivery's name in Parcel: shop and item, like "Shop Desk Lamp"; the service rejects one over 40 characters.
+  - The row's title is a text field holding the description. A changed one is sent with the approve, like an event's title; the scan's description stays as proposed_description.
+  - The scan names the carrier from Parcel's list: as the email does when that is a real carrier name, else from the tracking link's address or the number's shape. The service maps the name to Parcel's code from the vendored carrier list when the set is saved and rejects a name not on the list.
+    - A carrier the list marks as needing a postcode or an email (PostNL, Yodel, Apple Store Orders and the like) is rejected too: a row carries neither, and the add would fail at approval and spend one of the day's 20 requests.
+  - One set per tracking number: a number already in a set that is not superseded is rejected at save time, and the scan saves that email as ignored. So a carrier's later mail for the same shipment never adds it to Parcel again. A denied or refused add-delivery row holds nothing: it never added the shipment, so a re-scan or a fixed carrier can propose the number again.
+  - The row shows the tracking number in mono, select-all: one click on it selects the whole number, and never opens the row.
+  - A row caught mid-approve by a restart is settled at boot from Parcel's delivery list (https://parcelapp.net/help/api-view-deliveries.html, active and recent, 20 requests per hour): tracking number listed = success, absent = pending and re-fired on the next approve, list unreachable = unknown.
+- A copy row files one document a member email carries into a filing folder: an attachment by its exact name, or a document link from the email's own link list. Portal mail (Hillcrest's club portal notices) links its PDF instead of attaching it.
+  - The scan hands each email's files to the agent: its Attachments line, and each link whose text is a document's file name. When any email carries files, the filing folders follow as full paths (files_client.py, shared with the messages area).
+  - At save time the service rejects a folder not on that list. It reads the member email live and rejects an attachment name not on its Attachments line or a link that is not one of its document links, so nothing downloads that the email did not name as a file.
+  - Approving downloads the file into the hermes document cache (ASSISTANT_MAIL_DOCS) through the mail child: an attachment with download_attachment, a link with download_link (https only, 50 MB cap). The files server's copy then copies it into the folder under the row's filename. The gateway purges the cache copy within a day.
+    - A link that answers with a web page (a login wall) fails the row; nothing is saved.
+    - Any other file type is saved. Servers name document types too loosely to check against the filename: a .csv comes as text/plain or application/vnd.ms-excel.
+      - A loose type (text/plain, octet-stream) keeps the row's filename. A specific type gets its own extension added: a .csv sent as application/vnd.ms-excel is stored as .csv.xls, and the row's name checks then miss it.
+    - A name already taken in the folder fails the row before anything downloads; nothing is overwritten.
+    - A redirect to a plain http address fails the row before that request is sent.
+  - The row shows the filename and the folder; a link opens in a new tab, so the document can be checked before approving.
+  - A waiting attachment row shows an amber line naming both names when the stored name ends in a second extension before the attachment's, like 'bill.jpg.pdf'. Approving still saves it.
+  - A waiting attachment row whose attachment has no extension shows an amber warning. Approving still saves it.
+  - An ending after a dot counts as an extension unless it holds a space (services/mcp/common/file_types.py, shared with the files server).
+  - The row's filename is the name the files server stores: its own cleaning (control characters dropped, dots at the start and dots and spaces at the end stripped, the source file's extension added when the name does not end in it) is applied at save time.
+  - A copy the files server refuses fails the row.
+  - A copy whose answer is lost is checked on the disk: the file there = success, absent = run failed.
+  - A row caught mid-approve by a restart is settled at boot from the disk: absent = pending, there after the row's free-name check = success, there before it = run failed (the name was taken).
+- A failed or stale scan reads in the area's heading row, in amber — there are no banner strips.
+- Inbox, chat and finance each show one centered line where their cards would be when nothing is waiting: "inbox is clear", "no attachments waiting", "everything is categorized". A failed scan puts its own card there instead.
+  - Inbox: "last scan failed" from the scan's own status, or "no scan in over 11 hr" when the last batch is older than that (three missed scans at the every-3-hours cadence, plus 2 h slack so one late run does not trip it). The "last ran" stamp next to it belongs to the cron job, which can run without a batch landing.
+  - Finance and chat: "last run failed" / "last scan failed", plus a panel card carrying the failing step and its message.
+- The finance scan key first downloads a fresh budget copy, so new categories reach the picker, then starts the uncategorized scan; that run rebuilds the whole list.
+- The finance emails go out through Family emails (above), each kind sending its preset's sections; finance_email.py builds them from finance_jobs.py's parts (read_all, email_body, the summary call). Every section:
+  - The daily (finance-daily): Summary, Items to check (finance-file problems, printed only when there is something to say), Unusual charges (the outliers not yet marked seen in the finance area), New transactions (the week's transactions since the last email, grouped by account, then category). Each transaction line carries a mark: its outlier flags, or for an income deposit the income rules' verdict (routine, or off its usual amount). The summary sentences comment on the flags only.
+  - The weekly (finance-weekly): Summary and Cash flow — Income and spending so far with every group's category rows, Estimated, Forecast, Assets and Debt, Check. The summary sentences comment on the block.
+  - The monthly (finance-monthly, on the first of the month): Summary, Cash flow with the month's final numbers, Unusual charges over the whole month.
+  - Options, set per kind in the preset: details (income sub-lines, history rows, debt payoff and interest math), combine personal, show new payees. The weekly and monthly always print every group's per-category rows.
+    - Show new payees off leaves the new-payee flags out of the Unusual charges and out of the daily's transaction marks, so the daily's summary skips them too. The actions page's oddities list keeps them.
+    - Combine personal joins the personal categories (cash_flow.PERSONAL_CATEGORIES: Personal, Personal (name), Recurring (name), One-off (name)) into one "Personal (combined)" and one "Recurring (combined)" row per group, so no per-person figure is named anywhere in the report.
+    - Group totals are untouched, so the rows under a group still add up to it.
+- The finance reports area works on the finance emails, one kind at a time.
+  - The control row: the daily, weekly and monthly tabs; the data dropdown; and the "draft for" dropdown (the people with a saved family emails address).
+    - Data: demo data, then now, then the last 7 days (daily), the last 4 run days (weekly, the day its job runs), or every finished month back to cash_flow.FIRST_MONTH (monthly, read from the state's first_month). The monthly's now is the month so far.
+    - Demo data is finance_email.py's made-up rows: no budget read, no model call.
+  - "What the <kind> email holds": the sections chips and the options chips. A chip that differs from the kind's preset turns amber, and the line above names each difference.
+    - Make default for emails (two taps) posts the chips to `/api/family-emails/preset`; every family emails item of the kind sends them from then on. Back to emails' default (one tap) puts the preset's chips back.
+    - The chips are the page's alone until made the default; a page reload drops them.
+  - The rows: the whole email (the ticked sections in order), each section of the kind alone, then Links (a page-only part no email carries, marked "page only"). A section not ticked reads "not in email" and still builds alone.
+  - Each row: a chevron opening its last build's text or error, the run key (two taps), email draft (one tap) and save (two taps).
+    - Run posts `/api/finance-reports/build` with the kind, the part, the data and the chips. The service runs finance_email.py, which writes nothing and sends nothing. A real build reads no seen list and no printed ids, so the daily's outliers and new transactions print the whole 7-day window under a note that says so.
+    - A build with the summary takes a minute or two (one model call); the rest build in seconds. The run keys grey and the heading counts the build up; the page polls every 3 seconds while it runs.
+    - Email draft posts `/api/finance-reports/draft`; the service puts the row's built text — never a fresh build — into the main account's Drafts folder through mail_tools/draft_mail.py (one attempt), addressed to the picked person, with the build's subject. Nothing is sent. The row shows a drafted stamp with the address, or a "draft failed" word carrying the error.
+    - Save posts `/api/finance-reports/save`; the service writes the text to reports/ in the finance notes folder (ASSISTANT_FINANCE_NOTES): <day or month>-finance-<kind>[-details][-personal][-no-new-payees][-<part>].md, making the folder if it is missing. The row shows the saved stamp and the file name.
+    - Draft and save take no demo build.
+  - The builds live in the service's memory only, so a restart drops them. One build or draft at a time; a second tap gets a 409.
+- The web research area has one expandable row per research topic (ASSISTANT_WEB_RESEARCH/topics): the topic's name, a meta line with its cadence prefix and the last successful run (from the driver's runs log), and its own run key. The heading line counts the topics, the runs in flight, and the failing ones, and shows the next batch time (the web-research-batch cron job's next_run_at) — the batch is one job, so the stamp belongs to the area, not a row.
+  - A chevron key opens it: the topic's full prompt and the stored report's text (GET /api/web_research/report), each in its own banded block, read from the service on the first open and re-read when the report's updated stamp changes, with the delete report and delete topic keys at the end.
+  - While the driver's log shows consecutive failures for a topic, the row carries an amber "failed ×N" status word; the open row holds the two-tap clear key, and the flag comes back if the next run fails too. Cleared flags live in state/web-research-cleared.json, keyed by the failed entry's log stamp.
+  - A row's run key spawns services/mcp/web_research/driver.py --topic <slug> detached, the same spawn the web_research MCP server's run_report makes; the row reads "started" for a few seconds, then a green "running" while the driver's in-flight marker (running.json in the folder ASSISTANT_WEB_RESEARCH_STATE names) holds a fresh stamp for the slug, and the finished report arrives by email like a batch run's. Marker entries older than the driver's run timeout are ignored, so a killed driver's leftover ages out.
+  - The open row's delete report key removes that topic's report and failure dump, keeping the topic, so the next run starts from scratch (the web_research MCP server's delete_report semantics; undo = Documents versioning). It greys while the topic has neither file.
+  - The open row's delete topic key removes the topic file and, with it, its report and failure dump, so no orphan report stays behind (undo = Documents versioning).
+- The finance area has two control rows: Categorize (the categorization queue, its keys rescan and submit all) and Oddities below it. The oddities block lists what the odd-charge rules flag: one row per transaction with its date, account, amount and reasons, newest first, and under it a key line: chat and a seen key, the same two-tap green check as the inbox action rows; the Oddities control row's green check takes every row off at once, grey while none is listed. "nothing odd this week" when the list is empty.
+  - The rules are services/mcp/budget/oddities.py, the same ones the daily email's Outliers section prints: amount off the payee's own pattern, possible duplicate, a monthly payee charged too soon or off its usual day, new payee. Fixed thresholds, no model.
+  - The rules read the budget app's own rules from the copy: a charge matching a rule with an amount condition, in the shape the rule tools write (payee is X or imported payee contains T, optionally notes contain T, amount is (approximately) N, date is approximately every month/year from D), is expected and skips the amount, schedule and new-payee checks (the duplicate check still runs); one matching all but the date is flagged "off its expected date".
+  - The daily email prints only the flags not yet seen here: finance_jobs.py reads state/finance-oddities-seen.json and drops those ids.
+  - Every poll runs the rules over the last 7 days of spending plus every queued transaction. A flagged transaction that is neither queued nor seen joins the queue (state/finance-oddities.json, transaction ids only); a queued one stays until its seen key, or until the rules stop flagging it.
+  - Seen (POST /api/finance/odd-seen, one id or all: true) moves the id into state/finance-oddities-seen.json with the transaction's date. Entries dated before the rules' 7-day window are dropped on each write, so a seen transaction never comes back: by then its date is outside the window the rules read.
+  - The rules read the api-cache copy, which the scheduled scan refreshes after the bank sync; the rescan key refreshes it too.
+  - The finance tile counts the oddities with the pending cards.
+- The finance queue is the 10 newest uncategorized transactions, one card, one row each, no group labels.
+  - Each row lists the rules that can match its transaction under its meta line: its payee's rules and those whose imported payee text is in its bank payee name. They are listed highest priority first, under a header saying so when there are two or more; a charge gets the category of the first rule it matches that sets a category.
+  - With the rule checkbox on, the apply pulls the budget fresh and checks the row's rule against the rules there (services/mcp/budget/rules.py). A conflicting rule fails the row with the reason and what to do; nothing is written for it. The same rule already there leaves the rule out and still sets the category.
+  - Spending filed into an income category refuses the whole apply call.
+  - A filed row moves to the done section; the clear key there takes every filed transaction off at once (POST /api/finance/hide). Filed means done or already handled — the transaction left the uncategorized queue, so no scan proposes it again. A failed row stays in the area with its keys for the retry.
+- A scheduled finance scan only tops up open slots: pending cards stay, finished cards leave, new transactions fill the freed slots.
+- A pending finance card drops on the next poll once the budget copy shows its transaction handled.
+- A scheduled finance save is held while this page is open with cards still pending, so it never swaps the cards out mid-review. A list with nothing left to decide is replaced even while the page is open.
+  - The page counts as open for 15 minutes after its last poll, and only the page's own poll counts: it carries the hold-update flag, so the menu-bar app's badge poll never holds a save.
+  - The finance scan key is never held — it is a rebuild you asked for.
+- The chat area proposes attachments worth filing from the watched chats (set in chat.env).
+  - One card is one attachment: clean filename, the model's folder pick in a dropdown of every filing folder, and a one-line reason. Approving runs export_attachment_to_scratch into the scratch folder, then the files server's move into the picked folder; a failed move has the service delete the scratch copy.
+  - The card's filename is the name the files server stores: the attachment's extension is added when the name does not end in it.
+  - A waiting card shows an amber line naming both names when the stored name ends in a second extension before the attachment's, and an amber warning when the attachment has no extension. Approving still saves it.
+  - The green submit-all key saves every waiting row to its dropdown's destination in one call (POST /api/chat/apply, the same call a row's check key makes with one item); the saves run one after another in a single thread, and the rows settle as each finishes. The key greys while no row is waiting or a save is running.
+  - The sender shows as its contact name: scans look each sender up once in the contacts server and cache the name in chat.json, so only misses re-check.
+  - Scans also extract each candidate's text (export into the scratch folder, the files server's read_document, then the service deletes the copy itself), so the model can file under the person named inside the document. The card's chevron shows the same text.
+  - state/chat.json's ledger remembers every verdict for 30 days — long past the 72-hour scan lookback, so a scanned attachment is never proposed twice, and the file does not grow forever.
+  - The chat rescan key starts the cron job on the spot. The chat reset (the system area's saved-data row) clears the ledger and drops every card, so the next scan re-proposes whatever is still in the window. The sender names and scan stamps stay.
+  - The control row's x denies every attachment still waiting, one call each (POST /api/chat/deny); a denied attachment never comes back.
+  - A saved row moves to the done section; the clear key there takes every saved row off at once (POST /api/chat/hide). The next scan drops saved rows anyway, and the ledger keeps the verdict either way.
+  - A failed save keeps its card: the error text shows and the check key retries. A card caught mid-approve by a service restart settles to the same retryable state at boot.
+  - A failed scan posts an error record instead of cards, which the page shows as a "last scan failed" panel; the next good scan clears it.
+- The Hermes audit area starts the same script the assistant_ops tools start, so a run started in chat shows here too, and one started here shows there.
+  - A pass can take an hour, so the run is detached: log rotation restarting this service does not touch it, and the audit's own files carry the state across.
+  - One run at a time is the audit's own flock; the run key greys while a run holds it, and the stop key only exists while one does.
+  - A category with findings gets a card as soon as it lands; clean categories are counted in the audit status line and named in its tooltip. Starting a run clears the previous pass's cards.
+  - Each card's copy key puts that category's block on the clipboard, in the report's own wording.
+  - Each finding row shows its text and, under it in the small grey line, its note on how much it matters. The keys a row carries come from the finding's act in the run record; the service acts only on a finding of the pass on record, and takes what to do from that record, never from the request.
+  - The memory card carries a two-tap accept key (green check) while its review waits: POST /api/hermes-audit/accept-changes runs audit.py --accept. The card reads Accepted until the next pass.
+  - The service decides which findings are handled (Accepted, Fixed, Copied, Acknowledged, snoozed) and counts the rest as open. The audit area's navigation card and the host app's menu badge both show that open count.
+  - Every open finding carries a two-tap snooze key (gray alarm-clock-off chip): for two weeks the finding leaves the counts, the status text and the report's warnings.
+    - The finding then moves to the last card, "snoozed": its category name, "until <date>", and a two-tap "undo" key (alarm-clock icon) that ends the snooze.
+    - A card whose findings are all snoozed is not drawn.
+  - A doctor finding carries a two-tap fix key (gray wrench chip): it posts /api/system/doctor-fix, one `hermes doctor --fix` for the shared install, which repairs what doctor can (the macOS TCC anchor on the venv python, the CA bundle, the hermes link). Every doctor finding's wrench shares one armed id, so they arm, go busy and settle together.
+    - The findings stay on the card until the next pass re-runs doctor.
+  - A finding with acknowledge edits carries a two-tap key (bell-off chip): expected from now on. It posts /api/hermes-audit/acknowledge, which writes the edits into the lists of the audit's expected.yaml (`ASSISTANT_AUDIT_EXPECTED`) by line, so every comment survives, and refuses an edit that does not read back as that change.
+    - Doctor warnings (into doctor_known, for the finding's profile), tool changes per platform (platform_tools), new bundled skills (bundled_skills), and a skill kept as the user's own edit (own_skill_edits).
+    - Once expected.yaml holds the edits the row reads Acknowledged; the finding stays until the next pass.
+  - A skill hermes stopped updating carries a two-tap restore key (gray wrench chip): POST /api/hermes-audit/restore-skill runs `hermes skills reset <skill> --restore --yes`, so hermes' copy replaces the local one. Its bell-off key keeps the local copy instead.
+  - A card holding the stale gateway plist finding carries a two-tap fix key beside copy: it posts /api/system/gateway-plist. That runs ~/.local/bin/hermes gateway start, which rewrites the gateway plist and reloads the gateway, then copies the new plist into the folder `ASSISTANT_LAUNCHD_SOURCE` names (setup/launchd/).
+    - hermes writes the PATH of whoever runs it into the plist. This service's PATH is short, so the run gets the PATH the gateway plist already holds.
+    - A gateway plist written after the pass that flagged it means the fix landed: the card reads Fixed in place of the key, and the finding stays until the next pass.
+  - The "plist ai.hermes.gateway.plist differs from the live copy" finding carries a two-tap copy key (gray file-down chip): it posts /api/hermes-audit/copy-plist, which copies the live gateway plist over its copy in the folder `ASSISTANT_LAUNCHD_SOURCE` names (setup/launchd/). Nothing reloads.
+    - Only the gateway plist gets this finding. Every other plist's source is setup/launchd, and its finding names `setup/install-launchd.sh` instead.
+    - The server copies only for a finding of the pass on record whose act carries the copy key, so the page cannot name any other file.
+    - A copy that now matches the live plist means the copy landed: the row reads Copied in place of the key, and the finding stays until the next pass.
+- The system area's llm row pauses the assistant's model runs: a length dropdown (1h, 2h, 4h, 8h; 2h picked) and the two-tap "pause assistant LLM" key write the pause file (POST /api/system/llm-pause), replacing a pause in effect; the clear key deletes it (POST /api/system/llm-resume). The line shows the time left, the end time, who wrote the file (ops or another local tool) and since when.
+  - The pause file is the file `ASSISTANT_LLM_PAUSE` names (services/mcp/common/llm_pause.py). It holds its own end time, and the first reader past it deletes it.
+  - Other local tools may write it too, for as long as they need the machine.
+  - While a pause stands, every model-calling script does nothing, however it was started: finance-uncategorized, chat-attach-scan, rules-suggest, hermes-audit, web-research-batch (and a topic run), finance-daily, finance-weekly and finance-monthly.
+  - The actions-inbox-scan agent job is held by its pre-run script, actions-inbox-scan-gate.sh: it prints `{"wakeAgent": false}` while the pause stands, and hermes skips the agent run.
+  - A finance email build with Summary started by hand is refused with the pause's end time: family emails' show and run now, assistant_ops' family_emails_send_now and family_emails_preview, and finance reports' run key on real data. The audit area's run key and the research area's run key answer 409 the same way.
+  - Not held: the assistant's chats and the reminder emails, which call no model.
+  - The wordmark on the actions and overview pages says PAUSE in place of OK; WARN and OFFLINE still win.
+- The gateways area shows in demo mode only: its service module is not in this repository. The demo draws the gateway, Discord, Telegram, the web chat, the hermes dashboard, the desktop app and the terminal.
+  - The gateway, web chat and hermes dashboard rows carry a restart key (the rotate arrow); the gateway restart waits for running tasks.
+  - The Discord and Telegram rows show the bot account, the user allowed to message it, the connection state, an on/off key, and a key that opens the chat.
+  - Each chat row carries its last chat: the title or first words, the last line, how long ago.
+- The system area's saved-data rows hold the cache clear and the three resets — inbox, chat, audit (the audit's is audit.py --reset: the next run is a first pass) — one amber key each; the row text is one short line naming what goes, in plain words.
+  - The cache clear (POST /api/system/clear-cache) forgets three in-memory reads, nothing on disk:
+    - reminders lists — read again on the next poll
+    - calendar list — read again on the next poll
+    - status check — runs again now
+  - The host app is read only on the page's own polls (the ones carrying the hold-update flag): the Reminders lists at most once a minute, the calendar list once. A closed page means no host-app reads; the menu-bar app's badge poll never starts one.
+- The reminders area is one card per group of Apple Reminders lists, a group being the first word of the list's name (Casey WAITING and Casey READY are Casey's). The group's name sits in a block on the left; each list is a cell: the open count in the list's own color from Reminders.app, the stage (the list name's last word when it is NEXT, WORKING, READY, SCHEDULED, WAITING or DONE, else the rest of the name) upper right with the list's due-today-or-earlier count under it in the same face and the list's color (hidden at zero), then the list's first three open reminders with their due dates, a past date in amber. An empty list reads faint.
+  - Every card has as many columns as the biggest group has lists. Inside a group the lists come in one order: the stages more groups share first, so a shared stage lands in the same column on every card, then the other stages in workflow order, then the lists with no stage. Groups sort by open count, most first.
+  - The lists named in reminders.py's IGNORED_LISTS (Alex) are left out of the cards and the open counts; the tile's due count still includes them when their name matches.
+  - The service asks the host app at most once a minute, and only while the page polls; the reminders server unreachable reads as an amber line under the heading and empty cards, and the card gets the "!" badge.
+- The wordmark carries the OK/WARN/OFFLINE status text; it warns while the status check reports issues. The actions page uses the status thread's check (the first 2 minutes after start, then one every 15 minutes, plus one on each cache clear); the overview page runs its own on every load.
+- Design testing: tapping the [assistant] wordmark cycles assistant, dev, demo.
+  - dev swaps the app icons for tiles linking to /dev1.html../dev5.html in pages/, one set for every page; dropping proposal pages in needs no page or server edit. Dev pages are temporary; delete them when a design is decided.
+  - demo reloads the page with every /api call sent to /demo/api: demo.py answers the state and the per-row reads with invented data covering every area and row state, and takes every write as a 202 that does nothing. Nothing real is read or written. The public demo's screenshots come from this mode.

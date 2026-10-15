@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Overview">
+<title>Assistant — Overview</title>
+<link rel="icon" href="/overview-icon.png">
+<link rel="apple-touch-icon" href="/overview-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<!-- Assistant overview page.
+     Live: every value comes from GET /api/overview/snapshot (overview.py),
+     served with this page by the actions server. The page refetches every
+     60 seconds. The wordmark reads WARN while the status check has problem
+     items, the same rule as the actions page.
+     The host stats ride one permanent line under the bar. Under it the
+     glance layer: narrow area
+     tiles — icon, a count of issues or activity, one shorthand status line,
+     amber when something is wrong — plus an "all" tile holding the issue
+     total. A tile picks the view: "all" stacks every area (the default), an
+     area tile shows that area alone; the choice sticks in localStorage per
+     device.
+     The work layer is six areas under slim header rows: models, services,
+     mcp, tools (last calls + the catalogue), sessions (by model +
+     by surface), links. Cron jobs live on the actions page's jobs area —
+     everything with interactive keys belongs there. -->
+<style>
+/* the page's own tokens: host bar segments and session shades, a neutral
+   ramp */
+:root {
+  --seg: #7d8794;
+  --q1: #8a93a0; --q1i: #33383e; --q2: #a3abb6; --q2i: #383d43;
+  --q3: #bcc2cb; --q3i: #43474a; --q4: #d2d6dc; --q4i: #4a4f54;
+  --q5: #e4e7eb; --q5i: #5a6065;
+  --bar-max: 1240px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --seg: #b6c0cf;
+    --q1: #8a94a6; --q1i: #1e2431; --q2: #737d8f; --q2i: #171c26;
+    --q3: #5d6779; --q3i: #dfe3ea; --q4: #4a5263; --q4i: #d5dae2;
+    --q5: #3a4150; --q5i: #b9c0cb;
+  }
+}
+:root[data-theme="dark"] {
+  --seg: #b6c0cf;
+  --q1: #8a94a6; --q1i: #1e2431; --q2: #737d8f; --q2i: #171c26;
+  --q3: #5d6779; --q3i: #dfe3ea; --q4: #4a5263; --q4i: #d5dae2;
+  --q5: #3a4150; --q5i: #b9c0cb;
+}
+
+body { font-size: 14.5px; }
+/* identifiers and numbers stay monospace inside the sans page */
+.st, .nm, .tn, .tc, .fam-n, .dim, .faint, .recp, .linkrow a {
+  font-family: var(--mono); font-size: 13px;
+}
+
+/* ---- panels: cards ------------------------------------------------------ */
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 1.25rem 1rem 2.5rem; }
+/* until the first snapshot lands, the pane shows only the wordmark */
+.boot { display: grid; place-items: center; padding: 22vh 0; }
+.boot .mark { font-size: 40px; font-weight: 700; letter-spacing: 0.02em; }
+.boot .mark b { color: var(--brand); font-weight: 400; }
+#pane-dash.loading > :not(.boot) { display: none; }
+#pane-dash:not(.loading) .boot { display: none; }
+.panel { border: 1px solid var(--card-edge); border-radius: 10px; overflow: hidden;
+  background: var(--panel); box-shadow: var(--card-shadow); margin-bottom: 16px; }
+.panel > :first-child { padding-top: 8px; }
+
+/* ---- the glance layer: narrow area tiles --------------------------------
+   2-3 per row on a phone; the last row may wrap. */
+
+.tiles { display: grid; gap: 8px; margin: 12px 0 22px;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+.atile { font-family: var(--sans); font-size: inherit; text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--card-edge); border-radius: 10px;
+  background: var(--panel); box-shadow: var(--card-shadow);
+  padding: 8px 11px 6px; color: var(--ink);
+  display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.atile .trow { display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 650; min-width: 0; }
+.atile .trow .svg-icon { width: 14px; height: 14px; stroke-width: 2.2;
+  color: var(--ac); flex: none; }
+.atile .trow .nm2 { overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.atile .tcount { font-family: var(--mono); font-size: 21px; font-weight: 700;
+  line-height: 1.35; }
+.atile .tcount.zero { color: var(--faint); font-weight: 400; }
+.atile .tstat { color: var(--sub); font-size: 10.5px; line-height: 1.5;
+  letter-spacing: 0.02em; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; min-height: 16px; }
+.atile .tstat .bad { color: var(--amber); }
+.atile .tstat .wrk { color: var(--tool); }
+.atile.sel { border: 2px solid var(--ac); padding: 7px 10px 5px; }
+.atile.all { --ac: var(--tool); }
+.atile.services { --ac: var(--green); }
+.atile.mcp { --ac: var(--s2); }
+.atile.models { --ac: var(--brand); }
+.atile.tools { --ac: var(--s3); }
+.atile.sessions { --ac: var(--seg); }
+.atile.links { --ac: var(--sub); }
+
+/* ---- area headers: slim rows -------------------------------------------- */
+
+.area { margin-bottom: 28px; }
+.area.off { display: none; }
+.area-top { display: flex; align-items: baseline; flex-wrap: wrap;
+  gap: 8px 12px; margin: 0 2px 12px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule); }
+.area-h { margin: 0; font-size: 13.5px; font-weight: 650;
+  letter-spacing: 0; }
+.a-ic { display: grid; place-items: center; align-self: center; flex: none; }
+.a-ic .svg-icon { width: 14px; height: 14px; stroke-width: 2.2; }
+.a-ic.services { color: var(--green); }
+.a-ic.mcp { color: var(--s2); }
+.a-ic.models { color: var(--brand); }
+.a-ic.tools { color: var(--s3); }
+.a-ic.sessions { color: var(--seg); }
+.a-ic.links { color: var(--sub); }
+.area-top .fill { flex: 1; }
+.area-top .m { color: var(--faint); font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; }
+/* sub-labels inside an area (last calls / catalogue, by model / by surface) */
+.sub-label { color: var(--sub); font-size: 11px; font-weight: 650;
+  letter-spacing: 0.09em; text-transform: uppercase; margin: 0 0 8px 4px; }
+.panel + .sub-label { margin-top: 12px; }
+
+.st { font-weight: 700; }
+.st.ok { color: var(--green); }
+.st.idl { color: var(--faint); }
+.st.bad { color: var(--amber); }
+
+/* ---- host row ---------------------------------------------------------- */
+
+/* one compact permanent line above the tiles, wrapping on the phone */
+.hostrow { display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 4px 22px; margin: 2px 2px 0; min-width: 0; }
+.stat { display: flex; align-items: baseline; gap: 1ch; min-width: 0; }
+.stat .l { color: var(--sub); font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; white-space: nowrap; }
+.stat .v { font-family: var(--mono); font-size: 13px; font-weight: 700;
+  white-space: nowrap; }
+.stat .d { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.seg { display: flex; gap: 1px; width: 64px; align-self: center; }
+
+/* ---- models -------------------------------------------------------------
+   One panel per group (voice) and per assistant section (chat,
+   auxiliary, scheduled jobs, speech), in two columns. A row per chain:
+   the jobs that share it, one per line, beside the chain. The model that
+   does the job is orange; each backup sits on its own line under it in
+   ink. A letter mark before each model names its source (L this Mac,
+   C the Claude subscription, O OpenRouter), filled in its name's color
+   softened toward the card, so the mark stays quieter than the name; the
+   legend's marks take the backup color. */
+
+.mcols { display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 0 16px; align-items: start; }
+.clist { display: grid;
+  grid-template-columns: fit-content(40%) minmax(0,1fr); }
+.crow { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  column-gap: 2ch; align-items: baseline; padding: 6px 18px;
+  border-top: 1px solid var(--hair); }
+.crow:first-child { border-top: 0; }
+.crow:hover { background: var(--band); }
+.roles .nm { display: block; }
+.mm { display: block; font-family: var(--mono); font-size: 13px;
+  overflow-wrap: anywhere;
+  --mc: color-mix(in srgb, var(--brand) 50%, var(--ink)); color: var(--mc); }
+.mm.bk, .legend { --mc: var(--ink); }
+.lt { display: inline-grid; place-items: center; width: 1.45em;
+  height: 1.45em; margin-right: 0.8ch; border-radius: 4px;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0; vertical-align: 0.05em; color: var(--panel);
+  background: color-mix(in srgb, var(--mc) 55%, var(--panel)); }
+.legend { display: flex; flex-wrap: wrap; gap: 2px 2ch; }
+.seg i { flex: 1 1 0; height: 8px; background: var(--track); display: block; }
+.seg i.on { background: var(--seg); }
+
+/* ---- services ----------------------------------------------------------- */
+
+/* the container owns the tracks and rows subgrid onto them, so columns size
+   to their widest content on any screen; only the flexible column truncates */
+#svcs { display: grid; column-gap: 1.2ch;
+  grid-template-columns: max-content minmax(0,1fr) repeat(2, max-content); }
+.svcrow {
+  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  gap: 1.2ch; align-items: baseline; padding: 6px 18px;
+}
+.svcrow:hover { background: var(--band); }
+/* a bad service's detail runs long, so it leaves the uptime column as a short
+   marker and takes a full-width line of its own that wraps, instead of
+   stretching the max-content track past the screen */
+.svcrow .err { grid-column: 1 / -1; white-space: normal;
+  overflow-wrap: anywhere; color: var(--amber); }
+
+#mcp { display: grid; column-gap: 1.2ch;
+       grid-template-columns: max-content minmax(0,1fr) repeat(2, max-content); }
+.mcprow {
+  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  gap: 1.2ch; align-items: baseline; padding: 6px 18px;
+}
+.mcprow:hover { background: var(--band); }
+.colhead {
+  color: var(--faint); letter-spacing: 0.08em; text-transform: uppercase;
+  border-bottom: 1px solid var(--hair); padding-top: 6px; padding-bottom: 6px;
+}
+.colhead > * { font-size: 11px; font-family: inherit; }
+.colhead:hover { background: none; }
+.nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dim { color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the faint tier: present but out of the way (ports, uptime) */
+.faint { color: var(--faint); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.r { text-align: right; white-space: nowrap; }
+.pad { padding-bottom: 10px; }
+
+/* ---- links reference list ----------------------------------------------- */
+
+/* the address takes its own line under the name */
+#linklist { display: grid; grid-template-columns: minmax(0,1fr); }
+.linkrow {
+  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  row-gap: 0; align-items: baseline; padding: 6px 18px;
+}
+.linkrow:hover { background: var(--band); }
+.linkrow a { color: var(--tool); text-decoration: none; white-space: normal;
+  overflow-wrap: anywhere; }
+.linkrow a:hover { text-decoration: underline; }
+
+/* ---- last tool calls: one column, newest first; the server collapses
+   consecutive repeats into one row with a count ----------------------- */
+
+.recent2 { display: grid; grid-template-columns: minmax(0,1fr);
+  padding: 6px 0 14px; }
+.recitem { padding: 4px 18px; border-top: 1px solid var(--hair); }
+.recitem:first-child { border-top: 0; }
+.recitem:hover { background: var(--band); }
+.recitem.hasp { cursor: pointer; }
+.recrow { display: grid; grid-template-columns: minmax(0,1fr) max-content;
+  gap: 1.2ch; align-items: baseline; }
+.recrow .mult { color: var(--sub); }
+/* the call's arguments trail the name on one cut-off line; a click opens
+   them in full below the name */
+.rc { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recp { color: var(--faint); font-size: 12.5px; }
+.recitem.open .rc { white-space: normal; }
+.recitem.open .recp { display: block; overflow-wrap: anywhere; }
+
+/* ---- tool catalogue ---------------------------------------------------- */
+
+.catalog { display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 0 28px; padding: 8px 18px 18px; }
+.fam { margin-bottom: 18px; }
+.fam-head {
+  display: grid; grid-template-columns: minmax(0,1fr) 3.5ch 3.5ch 3.5ch; gap: 0.9ch;
+  align-items: center;
+  border-bottom: 1px solid var(--rule);
+  padding: 3px 0 5px;
+}
+.fam-name { font-family: var(--mono); font-size: 13px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fam-n { font-weight: 600; text-align: right; color: var(--sub); }
+.tr { display: grid; grid-template-columns: minmax(0,1fr) 3.5ch 3.5ch 3.5ch; gap: 0.9ch;
+  padding: 3.5px 0; }
+.tr:hover { background: var(--band); }
+.tn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tc { text-align: right; }
+.tc.zero { color: var(--faint); }
+/* called within the hour: amber name; within the day: green */
+.tr.hot .tn { color: var(--amber); }
+.tr.day .tn { color: var(--green); }
+/* untouched all week: the whole row recedes */
+.tr.unused { color: var(--faint); }
+.fam-head.unused { opacity: .55; }
+
+/* ---- sessions: share bars ---------------------------------------------- */
+
+.share-label { padding: 10px 18px 0; color: var(--faint);
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+.share { display: flex; height: 18px; gap: 2px; margin: 5px 18px 0; }
+.share > div {
+  height: 100%; display: grid; place-items: center; overflow: hidden;
+  font-size: 11px; font-weight: 700; font-family: var(--mono);
+}
+.share .none { background: var(--fill2); color: var(--faint); font-weight: 400; }
+/* session shades: a neutral ramp, biggest week share in the strongest
+   contrast to the card; each shade has its own number color */
+.q1 { background: var(--q1); color: var(--q1i); }
+.q2 { background: var(--q2); color: var(--q2i); }
+.q3 { background: var(--q3); color: var(--q3i); }
+.q4 { background: var(--q4); color: var(--q4i); }
+.q5 { background: var(--q5); color: var(--q5i); }
+.share > div.hl { box-shadow: inset 0 0 0 1.5px var(--ink); }
+.sessrow.hl { background: var(--band); }
+.sessrows { margin-top: 8px; }
+.sessrow { display: grid; grid-template-columns: 12px minmax(0,1fr) 3.5ch 3.5ch 3.5ch;
+  gap: 1.2ch; align-items: baseline; padding: 6px 18px; }
+.sessrow:hover { background: var(--band); }
+.sessrow i { width: 9px; height: 9px; border-radius: 2px; align-self: center; }
+/* rows kept out of the share bars: faint, hollow marker, ruled off */
+.sessrow.excl { color: var(--faint); border-top: 1px solid var(--hair); }
+.sessrow.excl i { border: 1px solid var(--faint); }
+
+/* ---- text-size levels -----------------------------------------------------
+   m and l are the bigger readings bar.js sets through data-text on the
+   root; s needs no rules — the base styles are s. */
+
+html[data-text="m"] body { font-size: 16.5px; }
+html[data-text="m"] :where(.st, .nm, .tn, .tc, .fam-n, .dim, .faint,
+  .linkrow a, .fam-name) { font-size: 15px; }
+html[data-text="m"] .area-h { font-size: 15.5px; }
+html[data-text="m"] .a-ic .svg-icon { width: 16px; height: 16px; }
+html[data-text="m"] .area-top .m, html[data-text="m"] .sub-label { font-size: 12.5px; }
+html[data-text="m"] .atile .trow { font-size: 13.5px; }
+html[data-text="m"] .atile .tcount { font-size: 23px; }
+html[data-text="m"] .atile .tstat { font-size: 12px; }
+html[data-text="m"] .stat .l { font-size: 12.5px; }
+html[data-text="m"] .stat .v { font-size: 15px; }
+html[data-text="m"] .stat .d { font-size: 14px; }
+html[data-text="m"] .colhead > * { font-size: 12.5px; }
+html[data-text="m"] .recp { font-size: 14px; }
+html[data-text="m"] .share { height: 20px; }
+html[data-text="m"] .share > div { font-size: 12.5px; }
+html[data-text="m"] .seg i { height: 9px; }
+html[data-text="m"] .sessrow i { width: 10px; height: 10px; }
+html[data-text="m"] .mm { font-size: 15px; }
+html[data-text="m"] .lt { font-size: 12px; }
+
+html[data-text="l"] body { font-size: 18.5px; }
+html[data-text="l"] :where(.st, .nm, .tn, .tc, .fam-n, .dim, .faint,
+  .linkrow a, .fam-name) { font-size: 17px; }
+html[data-text="l"] .area-h { font-size: 17.5px; }
+html[data-text="l"] .a-ic .svg-icon { width: 18px; height: 18px; }
+html[data-text="l"] .area-top .m, html[data-text="l"] .sub-label { font-size: 14px; }
+html[data-text="l"] .atile .trow { font-size: 15px; }
+html[data-text="l"] .atile .tcount { font-size: 25px; }
+html[data-text="l"] .atile .tstat { font-size: 13.5px; }
+html[data-text="l"] .stat .l { font-size: 14px; }
+html[data-text="l"] .stat .v { font-size: 17px; }
+html[data-text="l"] .stat .d { font-size: 16px; }
+html[data-text="l"] .colhead > * { font-size: 14px; }
+html[data-text="l"] .recp { font-size: 16px; }
+html[data-text="l"] .share { height: 22px; }
+html[data-text="l"] .share > div { font-size: 14px; }
+html[data-text="l"] .seg i { height: 10px; }
+html[data-text="l"] .sessrow i { width: 11px; height: 11px; }
+html[data-text="l"] .mm { font-size: 17px; }
+html[data-text="l"] .lt { font-size: 13.5px; }
+
+@media (max-width: 760px) {
+  .catalog { grid-template-columns: minmax(0,1fr); }
+  .mcols, .clist { grid-template-columns: minmax(0,1fr); }
+  .crow { row-gap: 2px; }
+}
+</style>
+</head>
+<body data-bar="overview">
+
+<header class="bar"></header>
+
+<main class="wrap loading" id="pane-dash">
+
+  <div class="boot"><span class="mark"><b>[</b>assistant<b>]</b></span></div>
+
+  <div class="hostrow" id="hostrow"></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="area" id="area-models">
+    <div class="area-top">
+      <span class="a-ic models" data-icon="cpu"></span>
+      <h2 class="area-h">models</h2>
+      <span class="fill"></span>
+      <span class="m legend"><span><span class="lt">L</span>this Mac</span><span><span class="lt">C</span>Claude</span><span><span class="lt">O</span>OpenRouter</span></span>
+    </div>
+    <div class="mcols" id="models"></div>
+  </section>
+
+  <section class="area" id="area-services">
+    <div class="area-top">
+      <span class="a-ic services" data-icon="activity"></span>
+      <h2 class="area-h">services</h2>
+    </div>
+    <section class="panel"><div class="pad" id="svcs"></div></section>
+  </section>
+
+  <section class="area" id="area-mcp">
+    <div class="area-top">
+      <span class="a-ic mcp" data-icon="plug"></span>
+      <h2 class="area-h">mcp</h2>
+    </div>
+    <section class="panel"><div class="pad" id="mcp"></div></section>
+  </section>
+
+  <section class="area" id="area-tools">
+    <div class="area-top">
+      <span class="a-ic tools" data-icon="wrench"></span>
+      <h2 class="area-h">tools</h2>
+      <span class="fill"></span>
+      <span class="m">hour / day / week</span>
+    </div>
+    <div class="sub-label">last calls</div>
+    <section class="panel"><div class="recent2" id="recent"></div></section>
+    <div class="sub-label">catalogue</div>
+    <section class="panel"><div class="catalog" id="catalog"></div></section>
+  </section>
+
+  <section class="area" id="area-sessions">
+    <div class="area-top">
+      <span class="a-ic sessions" data-icon="message-square"></span>
+      <h2 class="area-h">sessions</h2>
+      <span class="fill"></span>
+      <span class="m">hour / day / week</span>
+    </div>
+    <div class="sub-label">by model</div>
+    <section class="panel" data-key="sess-model">
+      <div class="share-label">Last hour</div>
+      <div class="share" id="m1"></div>
+      <div class="share-label">Last 24 hours</div>
+      <div class="share" id="m24"></div>
+      <div class="share-label">Last 7 days</div>
+      <div class="share" id="m7"></div>
+      <div class="pad sessrows" id="mrows"></div>
+    </section>
+    <div class="sub-label">by surface</div>
+    <section class="panel" data-key="sess-surface">
+      <div class="share-label">Last hour</div>
+      <div class="share" id="s1"></div>
+      <div class="share-label">Last 24 hours</div>
+      <div class="share" id="s24"></div>
+      <div class="share-label">Last 7 days</div>
+      <div class="share" id="s7"></div>
+      <div class="pad sessrows" id="srows"></div>
+    </section>
+  </section>
+
+  <section class="area" id="area-links">
+    <div class="area-top">
+      <span class="a-ic links" data-icon="link"></span>
+      <h2 class="area-h">links</h2>
+    </div>
+    <section class="panel"><div class="pad" id="linklist"></div></section>
+  </section>
+
+</main>
+
+<script src="/shared.js"></script>
+<script src="/bar.js"></script>
+<script src="/dev-bar.js"></script>
+<script>
+/* $, $$, el, sum and icon come from /shared.js, barUpdate() from /bar.js.
+   Every snapshot value enters the page as text, never as markup. */
+
+/* the five macOS servers read as one "mac:" group in the tool catalogue */
+const SERVER_FAMILY = new Set(["macos_calendar", "macos_notes", "macos_contacts",
+  "reminders"]);
+
+/* numeric so 3.5 sorts before 3.6 and 4B before 35B; base so the capital
+   and lowercase model names sort together instead of in two groups */
+const byName = new Intl.Collator(undefined,
+  { sensitivity: "base", numeric: true }).compare;
+
+for (const s of $$(".a-ic[data-icon]")) s.append(icon(s.dataset.icon));
+
+/* ---- glance tiles + view ----------------------------------------------- */
+
+const VIEW_KEY = "assistant-overview-view";
+const AREA_IDS = ["models", "services", "mcp", "tools", "sessions", "links"];
+const TILE_ICONS = { all: "layout-grid", services: "activity",
+  mcp: "plug", models: "cpu", tools: "wrench", sessions: "message-square",
+  links: "link" };
+let view = localStorage.getItem(VIEW_KEY);
+if (view !== "all" && !AREA_IDS.includes(view)) view = "all";
+let SNAP = null;
+
+/* per-area tile facts: count + shorthand status segments [class, text];
+   "bad" colors its segment amber */
+function tileFacts(d) {
+  const badSvc = d.services
+    .filter((s) => s.state !== "ok" && s.state !== "idle").length;
+  const badMcp = d.mcpServers.filter((s) => s.state !== "ok").length;
+  const names = new Set();
+  for (const rows of Object.values(d.models))
+    for (const m of rows) names.add(m.name);
+  return {
+    services: { count: badSvc, short: [[badSvc ? "bad" : "", "down"]] },
+    mcp: { count: badMcp, short: [[badMcp ? "bad" : "", "down"]] },
+    models: { count: names.size, short: [["", "in use"]] },
+    tools: { count: sum(d.tools24h.map((t) => t[2])),
+      short: [["", "today" + (d.recentTools.length
+        ? `, last ${d.recentTools[0].ago}` : "")]] },
+    sessions: { count: sum(d.surfaces24h.map((x) => x.sessions)),
+      short: [["", "today"]] },
+    links: { count: null, short: [] },
+  };
+}
+
+function renderTiles() {
+  if (!SNAP) return;
+  const f = tileFacts(SNAP);
+  const tile = (id, count, short) => {
+    const b = el("button", `atile ${id}${view === id ? " sel" : ""}`);
+    const top = el("span", "trow");
+    top.append(icon(TILE_ICONS[id]), el("span", "nm2", id));
+    const stat = el("span", "tstat");
+    for (const [cls, tx] of short) stat.append(el("span", cls, tx));
+    b.append(top, el("span", "tcount" + (count == null ? " zero" : ""),
+                     count == null ? "—" : String(count)), stat);
+    b.addEventListener("click", () => setView(id));
+    return b;
+  };
+  $("#tiles").replaceChildren(tile("all", f.services.count + f.mcp.count, [["", "issues"]]),
+    ...AREA_IDS.map((id) => tile(id, f[id].count, f[id].short)));
+}
+
+function applyView() {
+  for (const id of AREA_IDS)
+    document.getElementById("area-" + id)
+      .classList.toggle("off", view !== "all" && view !== id);
+}
+
+function setView(id) {
+  view = id;
+  localStorage.setItem(VIEW_KEY, id);
+  applyView();
+  renderTiles();
+}
+applyView();
+
+/* sessions: hovering a share segment or a name row lights up everything in
+   the same slot — the row and its segments in all three bars. The rows in
+   the pooled tail share one slot, so they light up as a group. */
+$$('[data-key="sess-model"], [data-key="sess-surface"]').forEach((sec) => {
+  let lit = [];
+  const clear = () => { lit.forEach((e) => e.classList.remove("hl")); lit = []; };
+  sec.addEventListener("mouseover", (e) => {
+    const t = e.target.closest("[data-q]");
+    clear();
+    if (!t) return;
+    lit = $$(`[data-q="${t.dataset.q}"]`, sec);
+    lit.forEach((e) => e.classList.add("hl"));
+  });
+  sec.addEventListener("mouseleave", clear);
+});
+
+/* a call's arguments open to their full text on click; the next refresh
+   redraws the list, so an opened row closes on its own */
+$("#recent").addEventListener("click", (e) => {
+  const it = e.target.closest(".recitem.hasp");
+  if (it) it.classList.toggle("open");
+});
+
+/* ---- fetch loop ---------------------------------------------------------- */
+
+let checkedAt = null, failed = false, pageError = "";
+
+function report() {
+  const n = SNAP ? SNAP.issues : 0;
+  const paused = SNAP && SNAP.llmPause;
+  barUpdate({ checkedAt, failed, pageError,
+    status: n ? "warn" : paused ? "pause" : "ok",
+    title: n ? `${n} issue${n === 1 ? "" : "s"} — see the actions page's system area`
+         : paused ? "model runs paused until " + new Date(paused.until)
+             .toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+         : "" });
+}
+
+async function refresh() {
+  let snap;
+  try {
+    const r = await fetch("/api/overview/snapshot", { headers: { "X-Local-Request": "1" } });
+    if (!r.ok) throw new Error(r.status);
+    snap = await r.json();
+    checkedAt = Date.now();
+    failed = false;
+  } catch {
+    failed = true;
+    report();
+    return;
+  }
+  /* a render pass that throws (e.g. the JSON missing a field the page
+     expects) must show as an error, never as a page that looks fine
+     but stays stale */
+  try {
+    render(snap);
+    pageError = "";
+  } catch (e) {
+    pageError = "page error: " + e.message;
+  }
+  report();
+}
+
+refresh();
+setInterval(refresh, 60000);
+
+/* ---- rendering ---------------------------------------------------------- */
+
+const SEGS = 7;
+function seg(pct) {
+  const s = el("div", "seg");
+  for (let i = 0; i < SEGS; i++)
+    s.append(el("i", i < Math.round(pct / 100 * SEGS) ? "on" : ""));
+  return s;
+}
+
+/* a column-header row; it lives inside the grid container to share its
+   content-sized tracks */
+function colhead(cls, cols) {
+  const r = el("div", cls + " colhead");
+  r.append(...cols.map(([text, c]) => el("span", c, text)));
+  return r;
+}
+
+const countCell = (v) => el("span", "tc" + (v ? "" : " zero"), v ? String(v) : "–");
+
+function render(d) {
+  SNAP = d;
+  $("#pane-dash").classList.remove("loading");
+  renderTiles();
+
+  /* ---- host: label, value, detail, segmented bar ------------------------ */
+
+  const h = d.host;
+  $("#hostrow").replaceChildren(...[
+    ["CPU", "", h.cpu],
+    ["GPU", "", h.gpu],
+    ["RAM", `${Math.round(h.ramGb)} GB`, h.ram],
+    ["SSD", `${h.diskUsedGb} GB`, h.disk],
+  ].map(([l, note, pct]) => {
+    const s = el("div", "stat");
+    s.append(el("span", "l", l), el("span", "v", `${pct}%`));
+    if (note) s.append(el("span", "d", note));
+    s.append(seg(pct));
+    return s;
+  }));
+
+  /* ---- models: each group's rows back into chains. The server sends one
+     row per model of each chain in order, a backup labelled "<job> backup"
+     or "<job> backup N", so a backup row joins the chain above it. Jobs in
+     a panel with the same chain share one row, placed where the first of
+     them stood, their names A to Z. ------------------------------------- */
+
+  /* sources on this Mac: the set model_chains.py keeps */
+  const LOCAL = new Set(["lmstudio", "mlx-audio", "local"]);
+  const LETTER = { claude: "C", "claude-subscription-directsdk-experimental": "C",
+    openrouter: "O" };
+  const mm = (m, backup) => {
+    const s = el("span", "mm" + (backup ? " bk" : ""));
+    s.title = m.provider || "?";
+    s.append(el("span", "lt", LOCAL.has(m.provider) ? "L" : LETTER[m.provider] || "?"),
+             m.name);
+    return s;
+  };
+  const byTitle = new Map();
+  for (const g of Object.keys(d.models)) {
+    const chains = [];
+    for (const m of d.models[g]) {
+      if (/ backup( \d+)?$/.test(m.label) && chains.length) chains.at(-1).models.push(m);
+      else chains.push({ label: m.label, section: m.section, models: [m] });
+    }
+    for (const c of chains) {
+      const title = c.section ? `${g} ${c.section}` : g;
+      const p = byTitle.get(title) || { title, rows: new Map() };
+      const k = c.models.map((m) => `${m.provider}|${m.name}`).join(">");
+      const r = p.rows.get(k) || { models: c.models, labels: [] };
+      r.labels.push(c.label);
+      p.rows.set(k, r);
+      byTitle.set(title, p);
+    }
+  }
+  const panels = [...byTitle.values()]
+    .map((p) => ({ title: p.title, rows: [...p.rows.values()] }));
+  const panel = (p) => {
+    const list = el("div", "pad clist");
+    for (const r of p.rows) {
+      const row = el("div", "crow"), roles = el("div", "roles"), chain = el("div");
+      roles.append(...r.labels.sort(byName).map((l) => el("span", "nm", l)));
+      chain.append(...r.models.map((m, i) => mm(m, i > 0)));
+      row.append(roles, chain);
+      list.append(row);
+    }
+    const sec = el("section", "panel");
+    sec.append(list);
+    return [el("div", "sub-label", p.title), sec];
+  };
+  /* two columns, panels kept in order: a panel moves to the second column
+     once more than half of it would pass the halfway line count; a row
+     counts its taller side, names or models */
+  const lines = (p) =>
+    sum(p.rows.map((r) => Math.max(r.models.length, r.labels.length))) + 2;
+  const half = sum(panels.map(lines)) / 2;
+  const cols = [[], []];
+  let placed = 0;
+  for (const p of panels) {
+    cols[cols[1].length || placed + lines(p) / 2 > half ? 1 : 0].push(p);
+    placed += lines(p);
+  }
+  $("#models").replaceChildren(...cols.map((list) => {
+    const c = el("div");
+    c.append(...list.flatMap(panel));
+    return c;
+  }));
+
+  /* ---- services ---------------------------------------------------------- */
+
+  $("#svcs").replaceChildren(
+    colhead("svcrow", [[""], ["Name"], ["Port"], ["Uptime", "r"]]),
+    ...d.services.slice().sort((a, b) => byName(a.name, b.name)).map((s) => {
+      const cls = s.state === "ok" ? "ok" : s.state === "idle" ? "idl" : "bad";
+      const word = s.state === "ok" ? "[OK]" : s.state === "idle" ? "[--]" : "[!!]";
+      const bad = cls === "bad";
+      const r = el("div", "svcrow");
+      r.append(el("span", "st " + cls, word), el("span", "nm", s.name),
+               el("span", "faint", s.port || "–"),
+               el("span", "faint r", bad ? "–" : s.detail.replace(/^up /, "")));
+      if (bad) r.append(el("div", "err", s.detail));
+      return r;
+    }));
+
+  $("#mcp").replaceChildren(
+    colhead("mcprow", [[""], ["Name"], ["Port", "r"], ["Last used", "r"]]),
+    ...d.mcpServers.slice().sort((a, b) => byName(a.name, b.name)).map((s) => {
+      const ok = s.state === "ok";
+      const r = el("div", "mcprow");
+      r.append(el("span", "st " + (ok ? "ok" : "bad"), ok ? "[OK]" : "[!!]"),
+               el("span", "nm", s.name), el("span", "faint r", s.port),
+               el("span", "dim r", s.ago));
+      return r;
+    }));
+
+  /* ---- last tool calls ------------------------------------------------- */
+
+  $("#recent").replaceChildren(...d.recentTools.map((r) => {
+    const it = el("div", "recitem" + (r.p ? " hasp" : ""));
+    const row = el("div", "recrow"), rc = el("span", "rc");
+    rc.append(el("span", "nm", `${r.server}:${r.tool}`));
+    if (r.n > 1) rc.append(" ", el("span", "mult", `${r.n}x`));
+    if (r.p) rc.append(" ", el("span", "recp", r.p));
+    row.append(rc, el("span", "dim r", r.ago));
+    it.append(row);
+    return it;
+  }));
+
+  /* ---- links: the full list at the bottom -------------------------------- */
+
+  $("#linklist").replaceChildren(...d.links.slice()
+    .sort((a, b) => byName(a.name, b.name)).map((l) => {
+      const r = el("div", "linkrow"), a = el("a", "", l.url);
+      a.href = l.url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      r.append(el("span", "nm", l.name), a);
+      return r;
+    }));
+
+  /* ---- tool catalogue ---------------------------------------------------
+     Families A to Z, tools A to Z inside them. */
+
+  const used = {};
+  for (const [f, t, n] of d.tools7d) used[f + "." + t] = [0, 0, n];
+  for (const [f, t, n] of d.tools24h) (used[f + "." + t] ||= [0, 0, 0])[1] = n;
+  for (const [f, t, n] of d.tools1h) (used[f + "." + t] ||= [0, 0, 0])[0] = n;
+  const counts = (server, tool) => used[server + "." + tool] || [0, 0, 0];
+
+  const blocks = Object.keys(d.catalog).map((server) => ({
+    title: SERVER_FAMILY.has(server) ? "mac: " + server.replace(/^macos_/, "") : server,
+    rows: d.catalog[server].map((tool) => ({ tool, n: counts(server, tool) }))
+      .sort((a, b) => a.tool.localeCompare(b.tool)),
+  })).sort((a, b) => a.title.localeCompare(b.title)).map(({ title, rows }) => {
+    const fam = el("section", "fam");
+    const head = el("div", "fam-head" + (sum(rows.map((r) => r.n[2])) ? "" : " unused"));
+    head.append(el("span", "fam-name", title), ...[0, 1, 2].map((k) =>
+      el("span", "fam-n", String(sum(rows.map((r) => r.n[k])) || "–"))));
+    fam.append(head, ...rows.map(({ tool, n }) => {
+      const tr = el("div", `tr${n[2] ? "" : " unused"}${n[0] ? " hot" : n[1] ? " day" : ""}`);
+      tr.append(el("span", "tn", tool), ...n.map(countCell));
+      return tr;
+    }));
+    return { lines: rows.length + 1, node: fam };
+  });
+
+  /* two fixed columns, filled A to Z down one column at a time and cut
+     where the running line count passes half. CSS multi-column collapsed
+     to one column on short viewports, so the split is done here instead. */
+  const COLS = 2;
+  const target = sum(blocks.map((b) => b.lines)) / COLS;
+  const columns = Array.from({ length: COLS }, () => el("div"));
+  let col = 0, filled = 0;
+  for (const b of blocks) {
+    columns[col].append(b.node);
+    filled += b.lines;
+    if (col < COLS - 1 && filled >= target * (col + 1)) col++;
+  }
+  $("#catalog").replaceChildren(...columns);
+
+  /* ---- sessions: share bar per window plus one counts row per name ------ */
+
+  /* at most four named segments (shades q1..q4); everything else pools into
+     the q5 tail */
+  const SLOTS = 4;
+
+  function shareBar(host, list, slot) {
+    const total = sum(list.map((x) => x.sessions));
+    if (!total) {
+      const none = el("div", "none", "–");
+      none.style.width = "100%";
+      host.replaceChildren(none);
+      return;
+    }
+    const segs = list.filter((x) => slot[x.name])
+      .map((x) => [x.sessions, slot[x.name]]);
+    const rest = sum(list.filter((x) => !slot[x.name]).map((x) => x.sessions));
+    if (rest) segs.push([rest, 5]);
+    host.replaceChildren(...segs.map(([n, q]) => {
+      const pct = n / total * 100;
+      const s = el("div", "q" + q, pct >= 7 ? String(n) : "");
+      s.dataset.q = q;
+      s.style.width = pct + "%";
+      return s;
+    }));
+  }
+
+  /* shades follow the week list, the widest window, so a name keeps its
+     shade across the three bars. Excluded names stay out of the bars and
+     sit last in the rows. */
+  function sessionPanel([hourBar, dayBar, weekBar, rowsHost], week, day, hour, excluded = []) {
+    const out = (x) => excluded.includes(x.name);
+    const counted = (list) => list.filter((x) => !out(x));
+    const slot = {};
+    counted(week).slice(0, SLOTS).forEach((x, i) => { slot[x.name] = i + 1; });
+    shareBar($(hourBar), counted(hour), slot);
+    shareBar($(dayBar), counted(day), slot);
+    shareBar($(weekBar), counted(week), slot);
+    const cnt = (list) => Object.fromEntries(list.map((x) => [x.name, x.sessions]));
+    const h = cnt(hour), dy = cnt(day);
+    $(rowsHost).replaceChildren(...[...counted(week), ...week.filter(out)].map((x) => {
+      const r = el("div", "sessrow" + (out(x) ? " excl" : ""));
+      if (!out(x)) r.dataset.q = slot[x.name] || 5;
+      r.append(el("i", out(x) ? "" : "q" + (slot[x.name] || 5)), el("span", "tn", x.name),
+               ...[h[x.name] || 0, dy[x.name] || 0, x.sessions].map(countCell));
+      return r;
+    }));
+  }
+
+  sessionPanel(["#m1", "#m24", "#m7", "#mrows"], d.models7d, d.models24h, d.models1h);
+  sessionPanel(["#s1", "#s24", "#s7", "#srows"], d.surfaces7d, d.surfaces24h, d.surfaces1h, ["tool"]);
+}
+</script>
+</body>
+</html>

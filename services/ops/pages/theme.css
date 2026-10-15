@@ -1,0 +1,58 @@
+/* The colors and base rules every page shares. Palette: the Minimal theme's
+   Ayu scheme (github.com/kepano/obsidian-minimal,
+   src/scss/color-schemes/ayu.scss): a gray page behind white cards, the
+   toolbar dark in both themes. Each page adds only its own tokens and its
+   body font size. The theme key in bar.js sets data-theme on the root;
+   without it the OS setting decides. */
+
+:root {
+  color-scheme: light;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --bg: #f2f4f5; --panel: #ffffff; --band: #f2f5f6; --fill2: #e6ebee;
+  --card-edge: #e6eaed; --card-shadow: 0 1px 3px rgba(16,24,40,.06);
+  --ink: #3e4347; --sub: #7d8590; --faint: #a9aeb2;
+  --hair: #eef1f2; --rule: #e4e9eb; --track: #d9dfe4;
+  --amber: #b06f2f; --green: #5f9147; --tool: #4f7fa3;
+  --brand: #e88a00; --s1: #7aa159; --s2: #9784b6; --s3: #6690b3;
+  --bar: #292f3c; --bar-ink: #e7eaee; --bar-sub: #9aa4b5;
+  --bar-rule: #3b4454; --bar-fill: #333b48; --bar-edge: #20252f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #20252f; --panel: #292f3c; --band: #323949; --fill2: #3b4454;
+    --card-edge: #191d27; --card-shadow: 0 1px 3px rgba(0,0,0,.3);
+    --ink: #cccac2; --sub: #8894a6; --faint: #5e6879;
+    --hair: #323948; --rule: #3b4454; --track: #4a5669;
+    --amber: #cf9967; --green: #82a865; --tool: #8ab4cf;
+    --brand: #ff9a00; --s1: #85a171; --s2: #a293bd; --s3: #7195b5;
+    --bar: #171b23; --bar-ink: #cccac2; --bar-sub: #7a8496;
+    --bar-rule: #2b323e; --bar-fill: #262c37; --bar-edge: #101318;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #20252f; --panel: #292f3c; --band: #323949; --fill2: #3b4454;
+  --card-edge: #191d27; --card-shadow: 0 1px 3px rgba(0,0,0,.3);
+  --ink: #cccac2; --sub: #8894a6; --faint: #5e6879;
+  --hair: #323948; --rule: #3b4454; --track: #4a5669;
+  --amber: #cf9967; --green: #82a865; --tool: #8ab4cf;
+  --brand: #ff9a00; --s1: #85a171; --s2: #a293bd; --s3: #7195b5;
+  --bar: #171b23; --bar-ink: #cccac2; --bar-sub: #7a8496;
+  --bar-rule: #2b323e; --bar-fill: #262c37; --bar-edge: #101318;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: var(--sans);
+  line-height: 1.6; font-variant-numeric: tabular-nums;
+  background: var(--bg); color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  /* iOS otherwise auto-inflates text in wide blocks when the phone rotates
+     to landscape */
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+}
+.svg-icon { width: 13px; height: 13px; stroke: currentColor; fill: none;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

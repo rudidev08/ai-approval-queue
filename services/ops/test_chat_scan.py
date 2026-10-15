@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Tests for services/ops/chat_scan.py — stdlib unittest, no network.
+
+post and call_llm are stubbed, so no run ever reaches the ops service,
+OpenRouter, or a model. Run: python3 services/ops/test_chat_scan.py
+from the repo root.
+"""
+
+import io
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import unittest
+import urllib.error
+from unittest import mock
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import chat_scan as ms
+
+CAND = {"attachment_id": 101, "sender": "+1555", "chat": "jordan",
+        "received_at": "2026-08-17 10:00:00", "original_name": "lab.pdf",
+        "kind": "application/pdf", "context": "here you go"}
+MEDICAL = "/Users/demo/Documents/SharedPapers/jordan/medical"
+HEALTH = "/Users/demo/Documents/SharedPapers/riley/health"
+FOLDERS = [MEDICAL, HEALTH]
+
+
+class TestMainFlow(unittest.TestCase):
+    """One full main() run per test, with the candidates answer and the
+    model's verdicts stubbed; the posted batch is the assertion surface."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.posts = []
+        self.llm_calls = []
+
+        def fake_post(url, payload, timeout):
+            self.posts.append((url, payload))
+            if url == ms.CANDIDATES_URL:
+                return {"candidates": self.cands, "folders": FOLDERS,
+                        "problems": getattr(self, "problems", [])}
+            return {"ok": True}
+
+        def fake_llm(cands, folders):
+            self.llm_calls.append(sorted(c["attachment_id"] for c in cands))
+            return {c["attachment_id"]: self.verdicts[c["attachment_id"]]
+                    for c in cands if c["attachment_id"] in self.verdicts}
+
+        self.patches = (
+            mock.patch.dict(os.environ, {"ASSISTANT_LLM_PAUSE": os.path.join(
+                self._tmp.name, "assistant-llm-pause.json")}),
+            mock.patch.object(ms, "post", fake_post),
+            mock.patch.object(ms, "call_llm", fake_llm),
+            mock.patch.object(sys, "argv", ["chat_scan.py"]))
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self._tmp.cleanup()
+
+    def run_scan(self, cands, verdicts):
+        self.cands = cands
+        self.verdicts = verdicts
+        ms.main()
+        batches = [p for u, p in self.posts if u == ms.BATCH_URL]
+        self.assertEqual(len(batches), 1)
+        return batches[0]
+
+    def test_a_paused_scan_posts_nothing(self):
+        ms.llm_pause.start(30, "other")
+        ms.main()
+        self.assertEqual(self.posts, [])
+
+    def save_verdict(self, folder=MEDICAL, filename="lab.pdf"):
+        return {101: {"attachment_id": 101, "verdict": "save",
+                      "folder": folder, "filename": filename,
+                      "reason": "keep"}}
+
+    def test_good_save_becomes_a_card(self):
+        batch = self.run_scan([CAND], self.save_verdict())
+        self.assertEqual(len(batch["cards"]), 1)
+        self.assertEqual(batch["cards"][0]["filename"], "lab.pdf")
+        self.assertEqual(batch["ignored"], [])
+
+    def test_card_carries_sender_name_and_text(self):
+        cand = dict(CAND, sender_name="Jordan Lee", text="annual labs")
+        batch = self.run_scan([cand], self.save_verdict())
+        card = batch["cards"][0]
+        self.assertEqual(card["sender_name"], "Jordan Lee")
+        self.assertEqual(card["text"], "annual labs")
+
+    def test_ignore_verdict_is_ledgered(self):
+        batch = self.run_scan([CAND], {101: {"attachment_id": 101,
+                                             "verdict": "ignore",
+                                             "folder": "",
+                                             "filename": "", "reason": ""}})
+        self.assertEqual(batch, {"cards": [], "ignored": [101]})
+
+    def test_unanswered_candidate_is_not_ledgered(self):
+        batch = self.run_scan([CAND], {})
+        self.assertEqual(batch, {"cards": [], "ignored": []})
+
+    def test_invented_folder_is_dropped_not_ledgered(self):
+        batch = self.run_scan([CAND], self.save_verdict(folder="/Users/demo/Desktop"))
+        self.assertEqual(batch, {"cards": [], "ignored": []})
+
+    def test_filename_with_a_folder_is_dropped_not_ledgered(self):
+        batch = self.run_scan([CAND], self.save_verdict(filename="../x.pdf"))
+        self.assertEqual(batch, {"cards": [], "ignored": []})
+
+    def test_names_that_store_the_same_are_renamed(self):
+        c2 = dict(CAND, attachment_id=202)
+        verdicts = {**self.save_verdict(filename="lab"),
+                    202: {"attachment_id": 202, "verdict": "save", "folder": MEDICAL,
+                          "filename": "lab.pdf", "reason": "keep"}}
+        batch = self.run_scan([CAND, c2], verdicts)
+        self.assertEqual([c["filename"] for c in batch["cards"]], ["lab", "lab (2).pdf"])
+
+    def test_overlong_filename_is_dropped_not_ledgered(self):
+        batch = self.run_scan([CAND], self.save_verdict(filename="x" * 201))
+        self.assertEqual(batch, {"cards": [], "ignored": []})
+
+    def test_one_llm_call_per_group(self):
+        c2 = dict(CAND, attachment_id=202, sender="+1666")
+        batch = self.run_scan([CAND, c2],
+                              {**self.save_verdict(),
+                               202: {"attachment_id": 202, "verdict": "ignore",
+                                     "folder": "", "filename": "",
+                                     "reason": ""}})
+        self.assertEqual(self.llm_calls, [[101], [202]])
+        self.assertEqual(len(batch["cards"]), 1)
+        self.assertEqual(batch["ignored"], [202])
+
+    def test_candidates_problems_post_after_the_cards_as_an_error_record(self):
+        """An attachment whose text read failed is not in the candidates;
+        the service names it and the scan shows it."""
+        self.problems = ["text unreadable for photo-2.jpeg (id 501) — not "
+                         "judged: read failed: text recognition failed"]
+        self.cands = [dict(CAND)]
+        self.verdicts = self.save_verdict()
+        ms.main()
+        batches = [p for u, p in self.posts if u == ms.BATCH_URL]
+        self.assertEqual(len(batches), 2)
+        self.assertEqual([c["attachment_id"] for c in batches[0]["cards"]], [101])
+        self.assertEqual(batches[1]["error"]["step"], "candidates")
+        self.assertIn("photo-2.jpeg (id 501)", batches[1]["error"]["message"])
+
+    def test_problems_and_a_failed_group_share_one_error_record(self):
+        self.problems = ["sender name lookup failed for +1555 — judged "
+                         "without a name: FAILED: down"]
+        self.cands = [dict(CAND), dict(CAND, attachment_id=202, chat="riley")]
+        self.verdicts = self.save_verdict()
+
+        def flaky(cands, locs):
+            if cands[0]["attachment_id"] == 202:
+                raise RuntimeError("boom")
+            return self.verdicts
+        with mock.patch.object(ms, "call_llm", flaky):
+            ms.main()
+        batches = [p for u, p in self.posts if u == ms.BATCH_URL]
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[1]["error"]["step"], "llm")
+        self.assertIn("1 of 2 group(s) failed", batches[1]["error"]["message"])
+        self.assertIn("sender name lookup failed", batches[1]["error"]["message"])
+
+    def test_a_failed_group_posts_cards_then_an_error_record(self):
+        c2 = dict(CAND, attachment_id=202, sender="+1666")
+        self.cands = [CAND, c2]
+        self.verdicts = self.save_verdict()
+
+        def flaky(cands, locs):
+            if any(c["attachment_id"] == 202 for c in cands):
+                raise RuntimeError("boom")
+            return {c["attachment_id"]: self.verdicts[c["attachment_id"]]
+                    for c in cands if c["attachment_id"] in self.verdicts}
+
+        with mock.patch.object(ms, "call_llm", flaky):
+            ms.main()
+        batches = [p for u, p in self.posts if u == ms.BATCH_URL]
+        self.assertEqual(len(batches), 2)
+        # the good group's card posts first (clearing any old error)...
+        self.assertEqual(len(batches[0]["cards"]), 1)
+        self.assertNotIn("error", batches[0])
+        # ...then the failure record, naming what was not proposed
+        self.assertEqual(batches[1]["error"]["step"], "llm")
+        self.assertIn("202", batches[1]["error"]["message"])
+
+    def test_unanswered_counter_matches_actual_skips(self):
+        """Two answered, two unanswered among four candidates — the summary
+        line's count must be exactly 2: not off by one, not reset per
+        candidate, and not cut short by an early exit from the loop."""
+        c2 = dict(CAND, attachment_id=202)
+        c3 = dict(CAND, attachment_id=303)
+        c4 = dict(CAND, attachment_id=404)
+        verdicts = {**self.save_verdict(),
+                    202: {"attachment_id": 202, "verdict": "ignore",
+                          "folder": "", "filename": "", "reason": ""}}
+        # 303 and 404 get no verdict at all -> unanswered
+        logs = []
+        with mock.patch.object(ms, "log", logs.append):
+            batch = self.run_scan([CAND, c2, c3, c4], verdicts)
+        self.assertEqual([c["attachment_id"] for c in batch["cards"]], [101])
+        self.assertEqual(batch["ignored"], [202])
+        summary = [m for m in logs if m.startswith("llm: ") and "unanswered" in m]
+        self.assertEqual(summary, ["llm: 1 saves, 1 ignored, 2 unanswered of 4"])
+
+    def test_candidates_409_posts_nothing_and_does_not_exit(self):
+        """A 409 (a candidates build already running) is not a scan
+        failure: no error record, no exit."""
+        posts = []
+
+        def fake_post(url, payload, timeout):
+            if url == ms.CANDIDATES_URL:
+                raise urllib.error.HTTPError(
+                    url, 409, "Conflict", None, io.BytesIO(b"busy"))
+            posts.append((url, payload))
+            return {"ok": True}
+
+        with mock.patch.object(ms, "post", fake_post):
+            ms.main()  # must return normally, not sys.exit(1)
+        self.assertEqual(posts, [])
+
+    def test_non_409_http_error_posts_an_error_record_and_exits(self):
+        posts = []
+
+        def fake_post(url, payload, timeout):
+            if url == ms.CANDIDATES_URL:
+                raise urllib.error.HTTPError(
+                    url, 500, "Server Error", None, io.BytesIO(b"boom"))
+            posts.append((url, payload))
+            return {"ok": True}
+
+        with mock.patch.object(ms, "post", fake_post):
+            with self.assertRaises(SystemExit):
+                ms.main()
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0][1]["error"]["step"], "candidates")
+        self.assertIn("500", str(posts[0][1]["error"]["message"]))
+
+    def test_repeated_filename_into_the_same_folder_is_renamed(self):
+        c2 = dict(CAND, attachment_id=202)
+        verdicts = {**self.save_verdict(),
+                    202: {"attachment_id": 202, "verdict": "save",
+                          "folder": MEDICAL,
+                          "filename": "lab.pdf", "reason": "keep"}}
+        batch = self.run_scan([CAND, c2], verdicts)
+        names = [c["filename"] for c in batch["cards"]]
+        self.assertEqual(names, ["lab.pdf", "lab (2).pdf"])
+        # a different folder is not a collision
+        verdicts[202]["folder"] = HEALTH
+        verdicts[202]["filename"] = "lab.pdf"
+        self.posts.clear()
+        batch = self.run_scan([CAND, c2], verdicts)
+        self.assertEqual([c["filename"] for c in batch["cards"]],
+                         ["lab.pdf", "lab.pdf"])
+
+
+class TestPrompt(unittest.TestCase):
+    def test_sender_name_and_text_ride_along(self):
+        cand = dict(CAND, sender_name="Jordan Lee", text="annual labs")
+        p = ms.build_prompt([cand], FOLDERS)
+        self.assertIn("Jordan Lee", p)
+        self.assertIn("annual labs", p)
+
+    def test_no_empty_text_key(self):
+        p = ms.build_prompt([CAND], FOLDERS)
+        self.assertNotIn('"text"', p)
+
+
+class TestGrouping(unittest.TestCase):
+    def cand(self, aid, ts, chat="jordan", sender="+1555"):
+        return {"attachment_id": aid, "sender": sender, "chat": chat,
+                "received_at": ts, "original_name": "f.pdf",
+                "kind": "application/pdf"}
+
+    def test_burst_chains_into_one_group(self):
+        # each gap under 10 minutes — the chain holds
+        cands = [self.cand(1, "2026-08-16 10:00:00"),
+                 self.cand(2, "2026-08-16 10:05:00"),
+                 self.cand(3, "2026-08-16 10:14:59")]
+        self.assertEqual([[c["attachment_id"] for c in g]
+                          for g in ms.group_candidates(cands)], [[1, 2, 3]])
+
+    def test_a_gap_over_ten_minutes_splits(self):
+        cands = [self.cand(1, "2026-08-16 10:00:00"),
+                 self.cand(2, "2026-08-16 10:11:00")]
+        self.assertEqual(len(ms.group_candidates(cands)), 2)
+
+    def test_sender_and_chat_split(self):
+        cands = [self.cand(1, "2026-08-16 10:00:00"),
+                 self.cand(2, "2026-08-16 10:00:00", sender="+1666"),
+                 self.cand(3, "2026-08-16 10:00:00", chat="group")]
+        self.assertEqual(len(ms.group_candidates(cands)), 3)
+
+
+class TestCallLlm(unittest.TestCase):
+
+    def call(self, content):
+        resp = {"choices": [{"message": {"content": content}}]}
+        with mock.patch.object(ms.model_fallback, "chain", return_value=resp) as chain:
+            out = ms.call_llm([CAND], FOLDERS)
+        self.assertIs(chain.call_args.args[2], ms.model_fallback.OPENROUTER)
+        return out, chain.call_args.args[0]
+
+    def test_string_attachment_id_accepted(self):
+        content = json.dumps({"verdicts": [{"attachment_id": "101",
+                                            "verdict": "ignore",
+                                            "folder": "", "filename": "",
+                                            "reason": ""}]})
+        out, body = self.call(content)
+        self.assertIn(101, out)
+        self.assertEqual(body["response_format"]["json_schema"]["schema"], ms.SCHEMA)
+
+
+if __name__ == "__main__":
+    unittest.main()

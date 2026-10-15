@@ -1,0 +1,981 @@
+{
+ "abf": {
+  "name": "ABF Freight"
+ },
+ "acs": {
+  "name": "ACS Courier"
+ },
+ "adrexo": {
+  "name": "Colis Privé"
+ },
+ "airroad": {
+  "name": "AirRoad"
+ },
+ "aliex": {
+  "name": "AliExpress Shipping (Cainiao)"
+ },
+ "allegro": {
+  "name": "Allegro One"
+ },
+ "allied": {
+  "extra_required": 1,
+  "name": "Allied Express"
+ },
+ "amshipfr": {
+  "name": "Amazon Shipping France"
+ },
+ "amshipit": {
+  "name": "Amazon Shipping Italy"
+ },
+ "amshipuk": {
+  "name": "Amazon Shipping UK"
+ },
+ "amzlae": {
+  "name": "Amazon UAE"
+ },
+ "amzlau": {
+  "name": "Amazon Australia"
+ },
+ "amzlbe": {
+  "name": "Amazon Belgium"
+ },
+ "amzlbr": {
+  "name": "Amazon Brazil"
+ },
+ "amzlca": {
+  "name": "Amazon Canada"
+ },
+ "amzlde": {
+  "name": "Amazon Germany"
+ },
+ "amzleg": {
+  "name": "Amazon Egypt"
+ },
+ "amzles": {
+  "name": "Amazon Spain"
+ },
+ "amzlfr": {
+  "name": "Amazon France"
+ },
+ "amzlie": {
+  "name": "Amazon Ireland"
+ },
+ "amzlin": {
+  "name": "Amazon India"
+ },
+ "amzlit": {
+  "name": "Amazon Italy"
+ },
+ "amzljp": {
+  "name": "Amazon Japan"
+ },
+ "amzlmx": {
+  "name": "Amazon Mexico"
+ },
+ "amzlnl": {
+  "name": "Amazon Netherlands"
+ },
+ "amzlpl": {
+  "name": "Amazon Poland"
+ },
+ "amzlsa": {
+  "name": "Amazon Saudi Arabia"
+ },
+ "amzlse": {
+  "name": "Amazon Sweden"
+ },
+ "amzlsg": {
+  "name": "Amazon Singapore"
+ },
+ "amzltr": {
+  "name": "Amazon Turkey"
+ },
+ "amzluk": {
+  "name": "Amazon UK"
+ },
+ "amzlus": {
+  "name": "Amazon US"
+ },
+ "anc": {
+  "name": "ANC Delivers"
+ },
+ "anpost": {
+  "name": "An Post"
+ },
+ "apcpli": {
+  "name": "APC-PLI"
+ },
+ "apge": {
+  "name": "APG eCommerce"
+ },
+ "apple": {
+  "extra_required": 2,
+  "name": "Apple Store Orders"
+ },
+ "appleexp": {
+  "name": "Apple Express"
+ },
+ "aquiline": {
+  "name": "Aquiline"
+ },
+ "aramex": {
+  "name": "Aramex"
+ },
+ "arrowxl": {
+  "extra_required": 1,
+  "name": "Arrow XL"
+ },
+ "asendia": {
+  "name": "Asendia USA"
+ },
+ "asl": {
+  "name": "ASL"
+ },
+ "asmred": {
+  "extra_required": 1,
+  "name": "GLS Spain"
+ },
+ "at": {
+  "name": "Austrian Post"
+ },
+ "au": {
+  "name": "Australia Post"
+ },
+ "azer": {
+  "name": "Azerpost"
+ },
+ "bartol": {
+  "name": "Bartolini"
+ },
+ "bettert": {
+  "name": "Better Trucks"
+ },
+ "blp": {
+  "name": "Belpost",
+  "name_variations": {
+   "ru": "Белпочта"
+  }
+ },
+ "bluecare": {
+  "name": "Bluecare Express"
+ },
+ "bluedart": {
+  "name": "Blue Dart"
+ },
+ "bolg": {
+  "name": "Bulgarian Post"
+ },
+ "bonshaw": {
+  "extra_required": 1,
+  "name": "Postmedia Parcel Services"
+ },
+ "bpost": {
+  "extra_required": 1,
+  "name": "Bpost"
+ },
+ "bring": {
+  "name": "Bring"
+ },
+ "canpar": {
+  "name": "Canpar"
+ },
+ "cdl": {
+  "name": "CDL Last Mile"
+ },
+ "celeritas": {
+  "name": "Celeritas"
+ },
+ "cems": {
+  "name": "China Post EMS"
+ },
+ "ceska": {
+  "name": "Česká pošta"
+ },
+ "ceva": {
+  "name": "Ceva Logistics"
+ },
+ "chilex": {
+  "name": "Chilexpress"
+ },
+ "china": {
+  "name": "China Post"
+ },
+ "chitchats": {
+  "name": "Chit Chats"
+ },
+ "chrexp": {
+  "name": "Correos Express"
+ },
+ "chrono": {
+  "name": "Chronopost"
+ },
+ "chronop": {
+  "name": "Chronopost Portugal"
+ },
+ "cirro": {
+  "name": "Cirro"
+ },
+ "cjpacket": {
+  "name": "CJPacket"
+ },
+ "colispcode": {
+  "extra_required": 1,
+  "name": "Colis Privé (Postcode)"
+ },
+ "colomb": {
+  "name": "Colombia post (4-72)"
+ },
+ "cope": {
+  "name": "COPE"
+ },
+ "cor": {
+  "name": "Correos"
+ },
+ "corbra": {
+  "name": "Correios"
+ },
+ "corm": {
+  "name": "Correos de Mexico"
+ },
+ "corurg": {
+  "name": "Correo Uruguayo"
+ },
+ "coup": {
+  "name": "NZ Post"
+ },
+ "couple": {
+  "name": "Couriers Please"
+ },
+ "cp": {
+  "name": "Canada Post"
+ },
+ "cse": {
+  "name": "CSE",
+  "name_variations": {
+   "ru": "Курьер Сервис Экспресс"
+  }
+ },
+ "ctt": {
+  "name": "CTT"
+ },
+ "cyclpcode": {
+  "extra_required": 1,
+  "name": "Cycloon"
+ },
+ "cypr": {
+  "name": "Cyprus Post"
+ },
+ "dachser": {
+  "name": "Dachser"
+ },
+ "dao365": {
+  "name": "DAO365"
+ },
+ "dellin": {
+  "name": "Delovie Linii",
+  "name_variations": {
+   "ru": "Деловые линии"
+  }
+ },
+ "dhl": {
+  "name": "DHL Express"
+ },
+ "dhlfreight": {
+  "name": "DHL Freight"
+ },
+ "dhlgf": {
+  "name": "DHL Global Forwarding"
+ },
+ "dhlgm": {
+  "name": "DHL Global Mail"
+ },
+ "dhlnl": {
+  "name": "DHL Netherlands"
+ },
+ "dhlpoland": {
+  "name": "DHL Poland"
+ },
+ "dhlsc": {
+  "name": "DHL Supply Chain"
+ },
+ "dhluk": {
+  "name": "DHL Parcel UK"
+ },
+ "dicom": {
+  "name": "GLS Canada"
+ },
+ "direct": {
+  "name": "Direct Link"
+ },
+ "dk": {
+  "name": "Post Danmark"
+ },
+ "doordash": {
+  "name": "DoorDash"
+ },
+ "dp": {
+  "name": "Deutsche Post"
+ },
+ "dpdat": {
+  "name": "DPD Austria"
+ },
+ "dpdfrpcode": {
+  "extra_required": 1,
+  "name": "DPD France"
+ },
+ "dpdgpcode": {
+  "extra_required": 1,
+  "name": "DPD Group"
+ },
+ "dpdie": {
+  "name": "DPD Ireland"
+ },
+ "dpditpcode": {
+  "extra_required": 1,
+  "name": "DPD Italy (BRT)"
+ },
+ "dpdpcode": {
+  "extra_required": 1,
+  "name": "DPD Germany"
+ },
+ "dpdpoland": {
+  "name": "DPD Poland"
+ },
+ "dpduk": {
+  "name": "DPD UK"
+ },
+ "dpexw": {
+  "name": "DPEX Worldwide"
+ },
+ "dpr": {
+  "name": "Deutsche Post Brief"
+ },
+ "dragonfly": {
+  "name": "Dragonfly"
+ },
+ "dragonnl": {
+  "name": "Dragonfly Netherlands"
+ },
+ "dsv": {
+  "name": "DSV"
+ },
+ "dtdc": {
+  "name": "DTDC India"
+ },
+ "dx": {
+  "extra_required": 1,
+  "name": "DX"
+ },
+ "dynalogic": {
+  "extra_required": 1,
+  "name": "Dynalogic"
+ },
+ "dynamex": {
+  "name": "TForce"
+ },
+ "easyship": {
+  "name": "Easyship"
+ },
+ "ecms": {
+  "name": "ECMS"
+ },
+ "econt": {
+  "name": "Econt Express"
+ },
+ "ecoscoot": {
+  "name": "EcoScooting"
+ },
+ "edos": {
+  "name": "CDEK"
+ },
+ "ee": {
+  "name": "Eesti Post"
+ },
+ "elta": {
+  "name": "Elta"
+ },
+ "emirates": {
+  "name": "Emirates Post"
+ },
+ "ems": {
+  "name": "EMS Russian Post",
+  "name_variations": {
+   "ru": "ЕМС Почта России"
+  }
+ },
+ "energia": {
+  "name": "TK Energia",
+  "name_variations": {
+   "ru": "ТК Энергия"
+  }
+ },
+ "eshopw": {
+  "extra_required": 2,
+  "name": "eShopWorld"
+ },
+ "estafe": {
+  "name": "Estafeta"
+ },
+ "fastau": {
+  "name": "Fastway AU"
+ },
+ "fastie": {
+  "name": "Fastway Ireland"
+ },
+ "fastnz": {
+  "name": "Fastway NZ"
+ },
+ "fedex": {
+  "name": "FedEx"
+ },
+ "fedpl": {
+  "name": "FedEx Poland"
+ },
+ "fivepost": {
+  "name": "5post"
+ },
+ "fleetpcode": {
+  "extra_required": 1,
+  "name": "FleetOptics"
+ },
+ "gelpcode": {
+  "extra_required": 1,
+  "name": "GEL Express"
+ },
+ "geniki": {
+  "name": "Geniki Taxydromiki"
+ },
+ "geodis": {
+  "extra_required": 1,
+  "name": "Geodis"
+ },
+ "globalp": {
+  "name": "GlobalPost"
+ },
+ "gls": {
+  "name": "GLS"
+ },
+ "glsit": {
+  "name": "GLS Italy"
+ },
+ "gobolt": {
+  "name": "GoBolt"
+ },
+ "gofo": {
+  "name": "GOFO Express"
+ },
+ "gofofr": {
+  "name": "GOFO Express France"
+ },
+ "gofoit": {
+  "name": "GOFO Express Italy"
+ },
+ "gofonl": {
+  "name": "GOFO Express Netherlands"
+ },
+ "gofous": {
+  "name": "GOFO Express US"
+ },
+ "gover": {
+  "name": "General-Overnight"
+ },
+ "gso": {
+  "name": "GLS US"
+ },
+ "hawai": {
+  "name": "Hawaiian Air Cargo"
+ },
+ "her2mann": {
+  "name": "Hermes 2-Mann-Handling"
+ },
+ "hermes": {
+  "name": "Hermes"
+ },
+ "hivedpcode": {
+  "extra_required": 1,
+  "name": "Hived"
+ },
+ "hk": {
+  "name": "Hongkong Post"
+ },
+ "hr": {
+  "name": "Hrvatska pošta"
+ },
+ "hrpar": {
+  "name": "HR Parcel"
+ },
+ "hung": {
+  "name": "Magyar Posta"
+ },
+ "ics": {
+  "name": "ICS Courier"
+ },
+ "il": {
+  "name": "Israel Post"
+ },
+ "imile": {
+  "name": "iMile"
+ },
+ "in": {
+  "name": "India Post"
+ },
+ "indon": {
+  "name": "Indonesia Post"
+ },
+ "inpespcode": {
+  "extra_required": 1,
+  "name": "Inpost Spain"
+ },
+ "inpost": {
+  "name": "InPost Paczkomaty"
+ },
+ "inpostit": {
+  "name": "InPost Italy"
+ },
+ "inpostuk": {
+  "name": "InPost UK"
+ },
+ "intelc": {
+  "name": "Dragonfly - Intelcom"
+ },
+ "inter": {
+  "name": "Interlink"
+ },
+ "it": {
+  "name": "Poste Italiane"
+ },
+ "jcex": {
+  "name": "JCEX"
+ },
+ "jde": {
+  "extra_required": 3,
+  "name": "JDE",
+  "name_variations": {
+   "ru": "ЖелДорЭкспедиция"
+  }
+ },
+ "jitsu": {
+  "name": "Jitsu"
+ },
+ "jordan": {
+  "name": "Jordan Post"
+ },
+ "jp": {
+  "name": "Japan Post"
+ },
+ "jtexp": {
+  "name": "J&T Express"
+ },
+ "kerry": {
+  "name": "Kerry Express"
+ },
+ "komon": {
+  "name": "Komon Express"
+ },
+ "kor": {
+  "name": "Korea Post"
+ },
+ "koreanair": {
+  "name": "Korean Air Cargo"
+ },
+ "kz": {
+  "name": "Kazpost",
+  "name_variations": {
+   "ru": "Казпост"
+  }
+ },
+ "landmark": {
+  "name": "Landmark Global"
+ },
+ "laser": {
+  "name": "OnTrac - Lasership"
+ },
+ "litva": {
+  "name": "Lietuvos paštas"
+ },
+ "loom": {
+  "name": "Loomis Express"
+ },
+ "lp": {
+  "name": "La Poste"
+ },
+ "lv": {
+  "name": "Latvijas Pasts"
+ },
+ "maersk": {
+  "name": "Maersk"
+ },
+ "major": {
+  "name": "Major Express"
+ },
+ "malpos": {
+  "name": "Malaysia Post"
+ },
+ "malta": {
+  "name": "MaltaPost"
+ },
+ "matka": {
+  "name": "Matkahuolto"
+ },
+ "meest": {
+  "name": "Meest"
+ },
+ "moldov": {
+  "name": "Moldova Post"
+ },
+ "mrelpcode": {
+  "extra_required": 1,
+  "name": "Mondial Relay (Postcode)"
+ },
+ "mrw": {
+  "name": "MRW"
+ },
+ "mscgva": {
+  "name": "MSC"
+ },
+ "myher": {
+  "name": "Evri"
+ },
+ "nacex": {
+  "name": "Nacex"
+ },
+ "naqel": {
+  "name": "Naqel Express"
+ },
+ "nationex": {
+  "name": "Nationex"
+ },
+ "newp": {
+  "name": "Nova Poshta",
+  "name_variations": {
+   "ru": "Новая Почта"
+  }
+ },
+ "nor": {
+  "name": "Norway Post"
+ },
+ "nzp": {
+  "name": "New Zealand Post (Deprecated)"
+ },
+ "oca": {
+  "name": "OCA Argentina"
+ },
+ "ocs": {
+  "name": "OCS Worldwide"
+ },
+ "ont": {
+  "name": "OnTrac"
+ },
+ "optima": {
+  "name": "Optima"
+ },
+ "p2g": {
+  "name": "Parcel2Go"
+ },
+ "paack": {
+  "extra_required": 1,
+  "name": "Paack"
+ },
+ "packeta": {
+  "name": "Packeta"
+ },
+ "paczka": {
+  "name": "OrlenPaczka"
+ },
+ "paquet": {
+  "name": "Paquetexpress"
+ },
+ "parcelpnt": {
+  "name": "ParcelPoint"
+ },
+ "pbi": {
+  "name": "PBI - Pitney Bowes"
+ },
+ "pbt": {
+  "name": "PBT New Zealand"
+ },
+ "pec": {
+  "name": "PEC",
+  "name_variations": {
+   "ru": "ПЭК"
+  }
+ },
+ "pfl": {
+  "name": "Parcel Freight Logistics"
+ },
+ "phlpost": {
+  "name": "Philpost"
+ },
+ "pholder": {
+  "name": "Placeholder Delivery"
+ },
+ "pilot": {
+  "name": "Pilot Freight"
+ },
+ "pk": {
+  "name": "Pakistan Post"
+ },
+ "planzer": {
+  "extra_required": 1,
+  "name": "Planzer"
+ },
+ "poland": {
+  "name": "Poczta Polska"
+ },
+ "posthas": {
+  "name": "Post Haste"
+ },
+ "posti": {
+  "name": "Posti Finland - Itella"
+ },
+ "postnord": {
+  "name": "Postnord Logistics"
+ },
+ "ppl": {
+  "name": "PPL"
+ },
+ "ppx": {
+  "name": "PPX (RR Donnelley)"
+ },
+ "ptl": {
+  "name": "P&T Luxembourg"
+ },
+ "puro": {
+  "name": "Purolator"
+ },
+ "puropost": {
+  "name": "PuroPost"
+ },
+ "px": {
+  "name": "4PX"
+ },
+ "quickpac": {
+  "name": "Quickpac"
+ },
+ "redur": {
+  "name": "Redur"
+ },
+ "relay": {
+  "name": "Mondial Relay"
+ },
+ "relaypcode": {
+  "extra_required": 1,
+  "name": "Relay UK"
+ },
+ "rincos": {
+  "name": "Rincos"
+ },
+ "rm": {
+  "name": "Royal Mail"
+ },
+ "roadie": {
+  "name": "Roadie"
+ },
+ "rp": {
+  "name": "Russian Post",
+  "name_variations": {
+   "ru": "Почта России"
+  }
+ },
+ "safr": {
+  "name": "South African Post Office"
+ },
+ "sagawa": {
+  "name": "Sagawa Express"
+ },
+ "saudi": {
+  "name": "Saudi Post"
+ },
+ "sch": {
+  "name": "DB Schenker"
+ },
+ "se": {
+  "name": "Swedish Post"
+ },
+ "serbia": {
+  "name": "Serbia Post"
+ },
+ "serpost": {
+  "name": "Serpost"
+ },
+ "seur": {
+  "name": "SEUR"
+ },
+ "sf": {
+  "name": "SF Express"
+ },
+ "sfc": {
+  "name": "SendFromChina"
+ },
+ "shipbob": {
+  "name": "ShipBob"
+ },
+ "shiptor": {
+  "name": "Shiptor"
+ },
+ "sing": {
+  "name": "SingPost"
+ },
+ "skynetw": {
+  "name": "SkyNet Worldwide Express"
+ },
+ "slovak": {
+  "name": "Slovenská pošta"
+ },
+ "slv": {
+  "name": "Pošta Slovenije"
+ },
+ "smsa": {
+  "name": "SMSA Express"
+ },
+ "speedpak": {
+  "name": "SpeedPAK"
+ },
+ "speedx": {
+  "name": "SpeedX"
+ },
+ "straight": {
+  "name": "Straightship"
+ },
+ "swiship": {
+  "name": "Amazon (3rd Party Merchants)"
+ },
+ "swiss": {
+  "name": "Swiss Post"
+ },
+ "sypost": {
+  "name": "Sypost - SunYou Logistics"
+ },
+ "thai": {
+  "name": "Thailand Post"
+ },
+ "tipsac": {
+  "name": "Tipsa"
+ },
+ "tkkit": {
+  "name": "TK KIT",
+  "name_variations": {
+   "ru": "ТК КИТ"
+  }
+ },
+ "tnt": {
+  "name": "TNT"
+ },
+ "tntau": {
+  "name": "TNT Australia"
+ },
+ "tntfr": {
+  "name": "TNT France"
+ },
+ "tntit": {
+  "name": "TNT Italy"
+ },
+ "tntp": {
+  "extra_required": 1,
+  "name": "PostNL"
+ },
+ "tntpit": {
+  "name": "PostNL (Deprecated)"
+ },
+ "tntpitp": {
+  "extra_required": 5,
+  "name": "PostNL (International)"
+ },
+ "toll": {
+  "name": "Toll - Team Global Express"
+ },
+ "topyou": {
+  "name": "TopYou Logistics"
+ },
+ "tourline": {
+  "name": "CTT Express"
+ },
+ "transm": {
+  "extra_required": 1,
+  "name": "TransMission"
+ },
+ "trnkrpcode": {
+  "extra_required": 1,
+  "name": "Trunkrs"
+ },
+ "trpack": {
+  "name": "TrakPak"
+ },
+ "turk": {
+  "name": "PTT"
+ },
+ "tw": {
+  "name": "Taiwan (Chunghwa) Post"
+ },
+ "ubi": {
+  "name": "UBI Smart Parcel"
+ },
+ "udsa": {
+  "name": "UDS - United Delivery Service"
+ },
+ "ukr": {
+  "name": "Ukrpost",
+  "name_variations": {
+   "ru": "Укрпошта"
+  }
+ },
+ "uniuni": {
+  "name": "UniUni"
+ },
+ "ups": {
+  "name": "UPS"
+ },
+ "upsmi": {
+  "name": "UPS MI"
+ },
+ "usps": {
+  "name": "USPS"
+ },
+ "vasp": {
+  "name": "Vasp Expresso"
+ },
+ "veho": {
+  "name": "Veho"
+ },
+ "venipak": {
+  "name": "Venipak"
+ },
+ "vinted": {
+  "name": "Vinted Go"
+ },
+ "walmart": {
+  "name": "Walmart Shipping"
+ },
+ "wanb": {
+  "name": "WANB Express"
+ },
+ "whistl": {
+  "name": "Whistl"
+ },
+ "wish": {
+  "name": "Wish Post"
+ },
+ "wnd": {
+  "name": "wnDirect"
+ },
+ "xdp": {
+  "extra_required": 1,
+  "name": "XDP"
+ },
+ "yamato": {
+  "name": "Yamato"
+ },
+ "yanwen": {
+  "name": "Yanwen"
+ },
+ "yodel": {
+  "extra_required": 1,
+  "name": "Yodel"
+ },
+ "yun": {
+  "name": "Yun Express"
+ },
+ "zel": {
+  "name": "Zeleris"
+ }
+}

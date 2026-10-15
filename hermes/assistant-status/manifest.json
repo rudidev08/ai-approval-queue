@@ -1,0 +1,40 @@
+{
+  "categories": [
+    {
+      "name": "assistant",
+      "items": [
+        {"name": "gateway", "desc": "chat gateway, runs the agent", "type": "service", "launchd": "ai.hermes.gateway"},
+        {"name": "hermes-dashboard", "desc": "hermes web dashboard", "type": "service", "launchd": "com.example.assistant.hermes-dashboard", "http": "http://127.0.0.1:8301/api/status"},
+        {"name": "ops", "desc": "ops service with the actions and overview pages", "type": "service", "launchd": "com.example.assistant.ops", "http": "http://127.0.0.1:8300/"},
+        {"name": "host", "desc": "Assistant Host app: runs the MCP servers that need this Mac's permission grants; one row per server", "type": "service", "launchd": "com.example.assistant.host", "servers": "~/Library/Application Support/com.example.assistant.host/servers.json"},
+        {"name": "backup-nightly", "desc": "nightly zips of the budget and ~/.hermes", "type": "cron", "newest_files": ["~/Backups/assistant/budget.zip", "~/Backups/assistant/hermes.zip"], "max_file_age_h": 26},
+        {"name": "busy-events", "desc": "Work events mirrored to Shared as busy blocks", "type": "cron"},
+        {"name": "assistant-health", "desc": "health check of every MCP server, every 3 h; a failure emails once and again only if the failure set changes", "type": "cron"},
+        {"name": "release-news", "desc": "daily release news: tracked GitHub items, hermes changes, new releases of the tools the assistant runs", "type": "cron"},
+        {"name": "reminders-changes", "desc": "daily family reminder emails", "type": "cron"},
+        {"name": "actions-inbox-scan", "desc": "daily inbox scan, saves proposed action sets for the actions page", "type": "cron"},
+        {"name": "chat-attach-scan", "desc": "3x/day scan of watched chats, proposes attachment saves for the actions page", "type": "cron"},
+        {"name": "rules-suggest", "desc": "weekly rule suggestions for the email scan; thumbs up or down on the actions page's inbox area", "type": "cron"},
+        {"name": "hermes-audit", "desc": "weekly Hermes audit pass; report to ~/Assistant/hermes-audit-report.md and the actions page's audit area", "type": "cron"}
+      ]
+    },
+    {
+      "name": "finance",
+      "items": [
+        {"name": "budget", "desc": "budget sync server", "type": "service", "launchd": "com.example.assistant.budget", "http": "http://127.0.0.1:8303/"},
+        {"name": "bank-sync", "desc": "bank transaction import into the budget", "type": "cron"},
+        {"name": "finance-daily", "desc": "the daily finance report email", "type": "cron"},
+        {"name": "finance-weekly", "desc": "the weekly finance report email", "type": "cron"},
+        {"name": "finance-monthly", "desc": "monthly family finance emails, first day of the month", "type": "cron"},
+        {"name": "finance-uncategorized", "desc": "3x/day categorization batch for the actions page's finance area; the page's scan key fires it too", "type": "cron"}
+      ]
+    },
+    {
+      "name": "files",
+      "items": [
+        {"name": "web-research-batch", "desc": "overnight research topic runs", "type": "cron"},
+        {"name": "files-reindex", "desc": "files search index rebuild", "type": "cron"}
+      ]
+    }
+  ]
+}
